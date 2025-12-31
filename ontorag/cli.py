@@ -159,6 +159,37 @@ def cmd_extract_instances(
     """
     raise typer.Exit(code=1)
 
+    @app.command("sparql-server")
+def cmd_sparql_server(
+    onto: Optional[str] = typer.Option(None, help="Ontology TTL path (default: env ONTOLOGY_TTL)"),
+    inst: Optional[str] = typer.Option(None, help="Instances TTL path (default: env INSTANCES_TTL)"),
+    host: str = typer.Option("0.0.0.0", help="Bind host"),
+    port: int = typer.Option(8890, help="Bind port"),
+    cors: bool = typer.Option(True, help="Enable CORS"),
+    cors_origins: str = typer.Option("*", help="Comma-separated allowed origins"),
+    reload: bool = typer.Option(False, help="Uvicorn auto-reload (dev only)"),
+):
+    """
+    Start a local in-memory SPARQL endpoint (FastAPI) to inspect ontology + instances TTL.
+    Endpoints:
+      - GET/POST /sparql
+      - GET /health
+      - GET /stats
+      - POST /reload
+    """
+    import uvicorn
+    from ontorag.sparql_server import create_app
+
+    api = create_app(
+        ontology_ttl=onto,
+        instances_ttl=inst,
+        enable_cors=cors,
+        cors_allow_origins=cors_origins,
+    )
+
+    uvicorn.run(api, host=host, port=port, reload=reload)
+
+
 
 def main():
     app()
