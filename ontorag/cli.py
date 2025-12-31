@@ -147,19 +147,37 @@ def cmd_sparql_update(
     typer.echo("OK sparql-update")
 
 
-# Optional (stub) — da implementare dopo
 @app.command("extract-instances")
 def cmd_extract_instances(
     chunks: str = typer.Option(..., help="Path to chunks JSONL (ChunkDTO records)"),
     schema_card: str = typer.Option(..., help="Path to schema_card.json"),
-    out_ttl: str = typer.Option(..., help="Output TTL for instances"),
+    out_ttl: str = typer.Option(..., help="Output TTL for instances + provenance"),
 ):
     """
-    Instance extraction (DTO chunks -> RDF instances + provenance).
+    DTO chunks -> instance proposals (OpenRouter) -> RDF TTL (instances + provenance).
     """
-    raise typer.Exit(code=1)
+    from ontorag.instance_extractor_openrouter import extract_instance_chunk_proposals
+    from ontorag.instances_to_ttl import instance_proposals_to_graph
 
-    @app.command("sparql-server")
+    chunks_list = read_jsonl(chunks)
+    card = read_json(schema_card)
+
+    # index chunks by chunk_id for provenance
+    chunks_by_id = {c.get("chunk_id"): c for c in chunks_list if c.get("chunk_id")}
+
+    # 1) LLM: per-chunk instance proposals
+    proposals = extract_instance_chunk_proposals(chunks_list, card)
+
+    # 2) JSON -> RDF graph
+    ns = card.get("namespace") or "http://www.example.com/biz/"
+    g = instance_proposals_to_graph(chunks_by_id, proposals, namespace=ns)
+
+    Path(out_ttl).parent.mkdir(parents=True, exist_ok=True)
+    g.serialize(destination=out_ttl, format="turtle")
+    typer.echo(f"OK extract-instances: chunks={len(chunks_list)} out={out_ttl}")
+
+
+@app.command("sparql-server")
 def cmd_sparql_server(
     onto: Optional[str] = typer.Option(None, help="Ontology TTL path (default: env ONTOLOGY_TTL)"),
     inst: Optional[str] = typer.Option(None, help="Instances TTL path (default: env INSTANCES_TTL)"),
@@ -188,6 +206,39 @@ def cmd_sparql_server(
     )
 
     uvicorn.run(api, host=host, port=port, reload=reload)
+
+@app.command("mcp-server")
+def cmd_mcp_server(
+    # Modalità local TTL
+    onto: Optional[str] = typer.Option(None, help="Ontology TTL path (local mode)"),
+    inst: Optional[str] = typer.Option(None, help="Instances TTL path (local mode)"),
+
+    # Modalità remote SPARQL
+    sparql_endpoint: Optional[str] = typer.Option(None, help="Remote SPARQL endpoint (Blazegraph/QLever)"),
+
+    # Server options
+    host: str = typer.Option("0.0.0.0", help="Bind host"),
+    port: int = typer.Option(9010, help="Bind port"),
+):
+    """
+    Start an MCP server backed by either:
+      - local TTL (rdflib in-memory), or
+      - a remote SPARQL endpoint (Blazegraph/QLever).
+    """
+    from ontorag.mcp_backend import LocalRdfBackend, RemoteSparqlBackend
+    from ontorag.mcp_server import create_mcp_app
+
+    if sparql_endpoint:
+        backend = RemoteSparqlBackend(sparql_endpoint)
+    else:
+        if not onto or not inst:
+            raise typer.BadParameter("Provide --sparql-endpoint OR both --onto and --inst")
+        backend = LocalRdfBackend(onto, inst)
+
+    app_mcp = create_mcp_app(backend)
+    # fastmcp run
+    app_mcp.run(host=host, port=port)
+
 
 
 
