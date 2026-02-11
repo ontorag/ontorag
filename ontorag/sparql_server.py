@@ -10,14 +10,12 @@ from rdflib import Graph
 from rdflib.plugins.sparql.processor import SPARQLResult
 
 def _detect_query_kind(query: str) -> str:
-    q = query.strip().lower()
-    # allow PREFIX blocks
+    import re
+    # Strip PREFIX declarations, then check the first keyword
+    q = query.strip()
+    q_no_prefix = re.sub(r"(?i)^\s*(PREFIX\s+\S+:\s*<[^>]*>\s*)+", "", q).strip().lower()
     for kw in ("select", "ask", "construct", "describe"):
-        if q.startswith(kw):
-            return kw
-    # find first keyword after prefixes
-    for kw in ("select", "ask", "construct", "describe"):
-        if f"\n{kw} " in q or f"\n{kw}\t" in q:
+        if q_no_prefix.startswith(kw):
             return kw
     return "unknown"
 
