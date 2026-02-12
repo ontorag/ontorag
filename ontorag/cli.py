@@ -240,6 +240,85 @@ def cmd_mcp_server(
     app_mcp.run(host=host, port=port)
 
 
+@app.command("ontology-mcp")
+def cmd_ontology_mcp(
+    catalog: str = typer.Option("./data/ontologies", help="Path to ontology catalog directory"),
+    host: str = typer.Option("0.0.0.0", help="Bind host"),
+    port: int = typer.Option(9020, help="Bind port"),
+):
+    """
+    Start an MCP server for browsing, searching, and composing baseline ontologies.
+
+    Tools:
+      - list_ontologies     — list registered baselines
+      - inspect_ontology    — view classes/properties of a baseline
+      - search_classes      — search classes across all baselines
+      - search_properties   — search properties across all baselines
+      - compose             — merge selected baselines into a schema card
+      - add_ontology        — register a new baseline (TTL content)
+    """
+    from ontorag.ontology_mcp import create_ontology_mcp
+
+    mcp_app = create_ontology_mcp(catalog)
+    mcp_app.run(host=host, port=port)
+
+
+@app.command("register-ontology")
+def cmd_register_ontology(
+    slug: str = typer.Argument(..., help="Short identifier for the ontology (e.g., 'foaf', 'schema_org')"),
+    ttl: str = typer.Argument(..., help="Path to OWL/RDFS Turtle file"),
+    catalog: str = typer.Option("./data/ontologies", help="Path to ontology catalog directory"),
+    label: str = typer.Option("", help="Human-readable label"),
+    description: str = typer.Option("", help="Short description"),
+    namespace: Optional[str] = typer.Option(None, help="Override namespace (auto-detected if omitted)"),
+    tags: Optional[str] = typer.Option(None, help="Comma-separated tags"),
+):
+    """
+    Register an OWL/TTL file as a baseline ontology in the catalog.
+    """
+    from ontorag.ontology_catalog import register_ontology
+
+    tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
+
+    entry = register_ontology(
+        catalog_dir=catalog,
+        slug=slug,
+        ttl_path=ttl,
+        label=label,
+        description=description,
+        namespace=namespace,
+        tags=tag_list,
+    )
+    typer.echo(f"OK register-ontology: slug={entry['slug']} namespace={entry.get('namespace','')}")
+
+
+@app.command("init-schema-card")
+def cmd_init_schema_card(
+    baselines: str = typer.Option(..., help="Comma-separated baseline slugs (e.g., 'foaf,schema_org')"),
+    out: str = typer.Option(..., help="Output path for initial schema_card.json"),
+    catalog: str = typer.Option("./data/ontologies", help="Path to ontology catalog directory"),
+    namespace: Optional[str] = typer.Option(None, help="Override target namespace"),
+):
+    """
+    Create an initial schema card by composing one or more baseline ontologies.
+    Each class/property carries an 'origin' field tracking its source.
+    """
+    from ontorag.ontology_catalog import compose_baselines
+
+    slugs = [s.strip() for s in baselines.split(",") if s.strip()]
+    if not slugs:
+        raise typer.BadParameter("Provide at least one baseline slug.")
+
+    card = compose_baselines(catalog, slugs, target_namespace=namespace)
+    write_json(out, card)
+
+    cls_count = len(card.get("classes", []))
+    dp_count = len(card.get("datatype_properties", []))
+    op_count = len(card.get("object_properties", []))
+    typer.echo(
+        f"OK init-schema-card: baselines={slugs} "
+        f"classes={cls_count} datatype_props={dp_count} object_props={op_count} out={out}"
+    )
 
 
 def main():
