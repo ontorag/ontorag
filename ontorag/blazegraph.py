@@ -15,13 +15,20 @@ def blazegraph_sparql_update(update_query: str) -> None:
     r.raise_for_status()
 
 def blazegraph_upload_ttl(ttl_path: str, graph_iri: str) -> None:
-    ttl = Path(ttl_path).read_text(encoding="utf-8")
-    
-    update = f"""
-    INSERT DATA {{
-      GRAPH <{graph_iri}> {{
-{ttl}
-      }}
-    }}
-    """
-    blazegraph_sparql_update(update)
+    ttl = Path(ttl_path).read_bytes()
+
+    # Use Blazegraph REST API for bulk loading instead of embedding raw TTL
+    # in a SPARQL UPDATE string (which breaks on TTL containing curly braces).
+    url = BLAZEGRAPH_ENDPOINT
+    if "?" not in url:
+        url += f"?context-uri={graph_iri}"
+    else:
+        url += f"&context-uri={graph_iri}"
+
+    r = requests.post(
+        url,
+        data=ttl,
+        headers={"Content-Type": "application/x-turtle"},
+        timeout=120,
+    )
+    r.raise_for_status()

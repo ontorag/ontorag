@@ -1,12 +1,12 @@
 # schema_card.py
 from __future__ import annotations
 from typing import Dict, Any, List, Tuple, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 
 DT_RANGES = {"string","number","integer","boolean","date","datetime","enum","any"}
 
 def _now_iso() -> str:
-    return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 def _norm(s: str) -> str:
     return (s or "").strip()
@@ -211,15 +211,16 @@ def schema_card_from_proposal(previous_schema_card: Dict[str, Any],
     warnings = list(prev.get("warnings", [])) + list(aggregated_proposal.get("warnings", []))
     out["warnings"] = list(dict.fromkeys([_norm(w) for w in warnings if _norm(w)]))
 
-    # (Optional) sanity: se property domain/range non esistono come classi, emetti warning
-    class_names = {c["name"] for c in out["classes"] if c.get("name")}
+    # Sanity check: warn if property domain/range refers to a class not in the schema.
+    # Use case-insensitive lookup to match the deduplication logic above.
+    class_names_lower = {c["name"].lower() for c in out["classes"] if c.get("name")}
     for p in out["datatype_properties"]:
-        if p["domain"] and p["domain"] not in class_names:
+        if p["domain"] and p["domain"].lower() not in class_names_lower:
             out["warnings"].append(f"DatatypeProperty {p['name']} refers to unknown domain class {p['domain']}.")
     for p in out["object_properties"]:
-        if p["domain"] and p["domain"] not in class_names:
+        if p["domain"] and p["domain"].lower() not in class_names_lower:
             out["warnings"].append(f"ObjectProperty {p['name']} refers to unknown domain class {p['domain']}.")
-        if p["range"] and p["range"] not in class_names:
+        if p["range"] and p["range"].lower() not in class_names_lower:
             out["warnings"].append(f"ObjectProperty {p['name']} refers to unknown range class {p['range']}.")
 
 

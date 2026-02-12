@@ -1,10 +1,21 @@
 from __future__ import annotations
+import re
 from typing import Optional, Dict, Any
 
 from fastmcp import FastMCP
 from pydantic import BaseModel
 
 from ontorag.mcp_backend import SparqlBackend
+
+
+def _sanitize_iri(iri: str) -> str:
+    """Reject IRIs that could break SPARQL angle-bracket syntax."""
+    if not re.match(r'^[a-zA-Z][a-zA-Z0-9+.\-]*:', iri):
+        raise ValueError(f"Invalid IRI scheme: {iri!r}")
+    if '>' in iri or '<' in iri:
+        raise ValueError(f"IRI contains invalid characters: {iri!r}")
+    return iri
+
 
 def create_mcp_app(backend: SparqlBackend) -> FastMCP:
     app = FastMCP("ontorag-mcp")
@@ -23,6 +34,7 @@ def create_mcp_app(backend: SparqlBackend) -> FastMCP:
     @app.tool()
     def describe(iri: str, accept: str = "text/turtle") -> Dict[str, Any]:
         """DESCRIBE a resource by IRI."""
+        iri = _sanitize_iri(iri)
         q = f"DESCRIBE <{iri}>"
         data = backend.construct(q, accept=accept)
         return {"content_type": accept, "data": data}
@@ -30,6 +42,7 @@ def create_mcp_app(backend: SparqlBackend) -> FastMCP:
     @app.tool()
     def list_by_class(class_iri: str, limit: int = 50) -> Dict[str, Any]:
         """List instances of a class."""
+        class_iri = _sanitize_iri(class_iri)
         q = f"""
         SELECT ?s ?label WHERE {{
           ?s a <{class_iri}> .
@@ -41,12 +54,14 @@ def create_mcp_app(backend: SparqlBackend) -> FastMCP:
     @app.tool()
     def outgoing(iri: str, limit: int = 100) -> Dict[str, Any]:
         """Outgoing edges from a resource."""
+        iri = _sanitize_iri(iri)
         q = f"SELECT ?p ?o WHERE {{ <{iri}> ?p ?o }} LIMIT {int(limit)}"
         return backend.select(q)
 
     @app.tool()
     def incoming(iri: str, limit: int = 100) -> Dict[str, Any]:
         """Incoming edges to a resource."""
+        iri = _sanitize_iri(iri)
         q = f"SELECT ?s ?p WHERE {{ ?s ?p <{iri}> }} LIMIT {int(limit)}"
         return backend.select(q)
 

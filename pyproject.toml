@@ -7,7 +7,10 @@ dependencies = [
   "pydantic>=2.0.0",
   "rdflib>=7.0.0",
   "llama-index>=0.10.0",
-  "python-dotenv>=1.0.1"
+  "python-dotenv>=1.0.1",
+  "fastapi>=0.110.0",
+  "uvicorn>=0.29.0",
+  "fastmcp>=0.1.0",
 ]
 
 [project.scripts]

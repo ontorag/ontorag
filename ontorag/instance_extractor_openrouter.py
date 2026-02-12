@@ -136,4 +136,7 @@ def extract_instance_chunk_proposals(
                     raise
                 time.sleep(1.5 * (attempt + 1))
 
+        # Rate-limit between chunks to avoid hitting API limits
+        time.sleep(10)
+
     return out
