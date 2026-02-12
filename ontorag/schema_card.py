@@ -60,7 +60,8 @@ def schema_card_from_proposal(previous_schema_card: Dict[str, Any],
             continue
         cls_map[k] = {
             "name": c.get("name"),
-            "description": _norm(c.get("description",""))
+            "description": _norm(c.get("description","")),
+            "origin": c.get("origin", ""),
         }
 
     for c in aggregated_proposal.get("classes", []):
@@ -68,7 +69,11 @@ def schema_card_from_proposal(previous_schema_card: Dict[str, Any],
         if not k:
             continue
         if k not in cls_map:
-            cls_map[k] = {"name": c.get("name"), "description": _norm(c.get("description",""))}
+            cls_map[k] = {
+                "name": c.get("name"),
+                "description": _norm(c.get("description","")),
+                "origin": c.get("origin", "induced"),
+            }
         else:
             cls_map[k]["description"] = _merge_desc(cls_map[k].get("description",""), c.get("description",""))
 
@@ -87,7 +92,8 @@ def schema_card_from_proposal(previous_schema_card: Dict[str, Any],
             "name": name,
             "domain": dom,
             "range": rng,
-            "description": _norm(p.get("description",""))
+            "description": _norm(p.get("description","")),
+            "origin": p.get("origin", ""),
         }
 
     for p in aggregated_proposal.get("datatype_properties", []):
@@ -105,7 +111,8 @@ def schema_card_from_proposal(previous_schema_card: Dict[str, Any],
                 "name": name,
                 "domain": dom,
                 "range": rng,
-                "description": _norm(p.get("description",""))
+                "description": _norm(p.get("description","")),
+                "origin": p.get("origin", "induced"),
             }
         else:
             dt_map[k]["description"] = _merge_desc(dt_map[k].get("description",""), p.get("description",""))
@@ -128,7 +135,8 @@ def schema_card_from_proposal(previous_schema_card: Dict[str, Any],
             "name": name,
             "domain": dom,
             "range": rng,
-            "description": _norm(p.get("description",""))
+            "description": _norm(p.get("description","")),
+            "origin": p.get("origin", ""),
         }
 
     for p in aggregated_proposal.get("object_properties", []):
@@ -144,7 +152,8 @@ def schema_card_from_proposal(previous_schema_card: Dict[str, Any],
                 "name": name,
                 "domain": dom,
                 "range": rng,
-                "description": _norm(p.get("description",""))
+                "description": _norm(p.get("description","")),
+                "origin": p.get("origin", "induced"),
             }
         else:
             op_map[k]["description"] = _merge_desc(op_map[k].get("description",""), p.get("description",""))
@@ -164,7 +173,8 @@ def schema_card_from_proposal(previous_schema_card: Dict[str, Any],
             "name": e.get("name"),
             "actors": list(e.get("actors", [])),
             "effects": list(e.get("effects", [])),
-            "description": _norm(e.get("description","")) if "description" in e else ""
+            "description": _norm(e.get("description","")) if "description" in e else "",
+            "origin": e.get("origin", ""),
         }
 
     for e in aggregated_proposal.get("events", []):
@@ -176,7 +186,8 @@ def schema_card_from_proposal(previous_schema_card: Dict[str, Any],
                 "name": e.get("name"),
                 "actors": list(e.get("actors", [])),
                 "effects": list(e.get("effects", [])),
-                "description": _norm(e.get("description","")) if "description" in e else ""
+                "description": _norm(e.get("description","")) if "description" in e else "",
+                "origin": e.get("origin", "induced"),
             }
         else:
             # merge set-like per actors/effects
