@@ -16,3 +16,21 @@ requires-python = ">=3.12,<3.13"
 
 [project.scripts]
 ontorag = "ontorag.cli:main"
+
+
+[dependency-groups]
+# everything you use locally but not on Vercel
+dev = [
+  "pytest",
+  "ruff",
+  "ipython",
+]
+
+# ONLY what Vercel needs (example: no GDAL, no torch, no geopandas, etc.)
+vercel = [
+  "python-dotenv>=1.0.1",
+  "rdflib>=7.0.0",
+  "fastapi>=0.110.0",
+  "uvicorn>=0.29.0",
+  "fastmcp>=0.1.0",
+]
