@@ -17,14 +17,19 @@ from ontorag.ontology_catalog import (
     ttl_to_schema_card,
     compose_baselines,
 )
+from ontorag.verbosity import get_logger
+
+_log = get_logger("ontorag.ontology_mcp")
 
 
 def create_ontology_mcp(catalog_dir: str) -> FastMCP:
+    _log.info("Creating ontology catalog MCP (catalog=%s)", catalog_dir)
     app = FastMCP("ontorag-ontology-catalog")
 
     @app.tool()
     def list_ontologies() -> Dict[str, Any]:
         """List all registered baseline ontologies in the catalog."""
+        _log.debug("tool:list_ontologies")
         catalog = load_catalog(catalog_dir)
         entries = catalog.get("ontologies", [])
         return {
@@ -47,6 +52,7 @@ def create_ontology_mcp(catalog_dir: str) -> FastMCP:
         Inspect a baseline ontology: returns all classes, datatype
         properties, and object properties in schema-card format.
         """
+        _log.debug("tool:inspect_ontology slug=%s", slug)
         catalog = load_catalog(catalog_dir)
         entry = next(
             (e for e in catalog.get("ontologies", []) if e["slug"] == slug), None
@@ -147,6 +153,7 @@ def create_ontology_mcp(catalog_dir: str) -> FastMCP:
         Pass a list of ontology slugs. Returns a merged schema card
         ready to use as the starting point for extraction.
         """
+        _log.debug("tool:compose slugs=%s", slugs)
         ns = target_namespace or None
         card = compose_baselines(catalog_dir, slugs, target_namespace=ns)
         return {
@@ -170,6 +177,7 @@ def create_ontology_mcp(catalog_dir: str) -> FastMCP:
         The ontology is saved to the catalog and becomes available for
         inspection, search, and composition.
         """
+        _log.debug("tool:add_ontology slug=%s content_len=%d", slug, len(ttl_content))
         from pathlib import Path
         import tempfile
 

@@ -3,6 +3,10 @@ from __future__ import annotations
 from typing import Dict, Any, List, Tuple, Optional
 from datetime import datetime, timezone
 
+from ontorag.verbosity import get_logger
+
+_log = get_logger("ontorag.schema_card")
+
 DT_RANGES = {"string","number","integer","boolean","date","datetime","enum","any"}
 
 def _now_iso() -> str:
@@ -51,6 +55,13 @@ def schema_card_from_proposal(previous_schema_card: Dict[str, Any],
 
     out["version"] = _now_iso()
     out["namespace"] = namespace or prev.get("namespace") or out["namespace"]
+
+    _log.info(
+        "Merging schema card: prev classes=%d proposal classes=%d namespace=%s",
+        len(prev.get("classes", [])),
+        len(aggregated_proposal.get("classes", [])),
+        out["namespace"],
+    )
 
     # ---- CLASSES ----
     cls_map: Dict[str, Dict[str, Any]] = {}
@@ -236,5 +247,17 @@ def schema_card_from_proposal(previous_schema_card: Dict[str, Any],
 
 
     out["warnings"] = list(dict.fromkeys(out["warnings"]))
+
+    _log.info(
+        "Schema card built: classes=%d dt_props=%d obj_props=%d events=%d warnings=%d",
+        len(out["classes"]),
+        len(out["datatype_properties"]),
+        len(out["object_properties"]),
+        len(out["events"]),
+        len(out["warnings"]),
+    )
+    if out["warnings"]:
+        for w in out["warnings"]:
+            _log.debug("  warning: %s", w)
 
     return out

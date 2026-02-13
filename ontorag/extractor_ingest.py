@@ -5,6 +5,9 @@ from ontorag.dto import (
     DocumentDTO, ChunkDTO, ProvenanceDTO,
     stable_document_id, stable_chunk_id, hash_text
 )
+from ontorag.verbosity import get_logger
+
+_log = get_logger("ontorag.extractor_ingest")
 
 def clean_snippet(text: str, max_len: int = 240) -> str:
     t = " ".join(text.split())
@@ -16,11 +19,14 @@ def extract_with_llamaindex(file_path: str, mime: Optional[str] = None) -> Docum
     from llama_index.core.node_parser import SentenceSplitter
 
     doc_id = stable_document_id(file_path)
+    _log.info("Ingesting %s (doc_id=%s)", file_path, doc_id)
 
     docs = SimpleDirectoryReader(input_files=[file_path]).load_data()
+    _log.debug("LlamaIndex loaded %d raw documents", len(docs))
 
     splitter = SentenceSplitter(chunk_size=1024, chunk_overlap=120)
     nodes = splitter.get_nodes_from_documents(docs)
+    _log.info("Split into %d chunks (chunk_size=1024, overlap=120)", len(nodes))
 
     out = DocumentDTO(
         document_id=doc_id,
@@ -63,5 +69,7 @@ def extract_with_llamaindex(file_path: str, mime: Optional[str] = None) -> Docum
             text_hash=hash_text(text)
         )
         out.chunks.append(chunk)
+        _log.debug("  chunk %d: id=%s len=%d page=%s", i, chunk.chunk_id, len(text), prov.page)
 
+    _log.info("Created DocumentDTO with %d chunks", len(out.chunks))
     return out

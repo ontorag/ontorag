@@ -9,6 +9,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from rdflib import Graph
 from rdflib.plugins.sparql.processor import SPARQLResult
 
+from ontorag.verbosity import get_logger
+
+_log = get_logger("ontorag.sparql_server")
+
 def _detect_query_kind(query: str) -> str:
     import re
     # Strip PREFIX declarations, then check the first keyword
@@ -58,9 +62,11 @@ def _serialize_graph_result(graph: Graph, mime: str) -> Tuple[bytes, str]:
     return graph.serialize(format="turtle"), "text/turtle"
 
 def _load_graph(ontology_ttl: str, instances_ttl: str) -> Graph:
+    _log.info("Loading graph: onto=%s inst=%s", ontology_ttl, instances_ttl)
     g = Graph()
     g.parse(ontology_ttl, format="turtle")
     g.parse(instances_ttl, format="turtle")
+    _log.info("Graph loaded: %d triples", len(g))
     return g
 
 def create_app(
@@ -152,6 +158,7 @@ def create_app(
         g: Graph = app.state.graph
         kind = _detect_query_kind(query)
         accept = request.headers.get("accept", "*/*")
+        _log.debug("SPARQL %s query (%d chars), accept=%s", kind, len(query), accept)
 
         try:
             if kind in ("select", "ask"):

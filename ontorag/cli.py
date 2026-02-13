@@ -16,21 +16,36 @@ from ontorag.schema_card import schema_card_from_proposal
 from ontorag.proposal_aggregator import aggregate_chunk_proposals
 from ontorag.proposal_to_ttl import proposal_to_ttl
 from ontorag.blazegraph import blazegraph_upload_ttl, blazegraph_sparql_update
+from ontorag.verbosity import setup_logging, get_logger
 
 app = typer.Typer(add_completion=False, help="OntoRAG CLI — ingestion, ontology proposals, schema cards, RDF export.")
+_log = get_logger("ontorag.cli")
+
+
+@app.callback()
+def _cli_callback(
+    verbose: int = typer.Option(0, "--verbose", "-v", count=True,
+                                help="Verbosity level: -v for progress, -vv for debug traces."),
+):
+    """OntoRAG — ontology-first RAG pipeline."""
+    setup_logging(verbose)
+
 
 # -------------------------
 # Helpers
 # -------------------------
 
 def read_json(path: str) -> dict:
+    _log.debug("Reading JSON: %s", path)
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
 def write_json(path: str, obj: dict) -> None:
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     Path(path).write_text(json.dumps(obj, ensure_ascii=False, indent=2), encoding="utf-8")
+    _log.debug("Wrote JSON: %s", path)
 
 def read_jsonl(path: str) -> List[dict]:
+    _log.debug("Reading JSONL: %s", path)
     out = []
     with Path(path).open("r", encoding="utf-8") as f:
         for line in f:
@@ -38,11 +53,13 @@ def read_jsonl(path: str) -> List[dict]:
             if not line:
                 continue
             out.append(json.loads(line))
+    _log.debug("Read %d records from %s", len(out), path)
     return out
 
 def write_text(path: str, text: str) -> None:
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     Path(path).write_text(text, encoding="utf-8")
+    _log.debug("Wrote text: %s", path)
 
 
 # -------------------------
@@ -58,7 +75,9 @@ def cmd_ingest(
     """
     Ingest a file using LlamaIndex and store DocumentDTO + ChunkDTO (JSON + JSONL).
     """
+    _log.info("Ingesting file: %s", file)
     doc = extract_with_llamaindex(file, mime=mime)
+    _log.info("Storing %d chunks to %s", len(doc.chunks), out)
     store_document_jsonl(doc, out)
     typer.echo(f"OK ingest: document_id={doc.document_id} chunks={len(doc.chunks)} out={out}")
 
@@ -72,15 +91,18 @@ def cmd_extract_schema(
     """
     Run ontology induction on DTO chunks and produce an aggregated schema proposal (JSON).
     """
-    from ontorag.ontology_extractor_openrouter import extract_schema_chunk_proposals  # implement this module
+    from ontorag.ontology_extractor_openrouter import extract_schema_chunk_proposals
 
     chunks_list = read_jsonl(chunks)
     card = read_json(schema_card)
+
+    _log.info("Running schema extraction on %d chunks", len(chunks_list))
 
     # 1) per-chunk proposals (LLM)
     chunk_proposals = extract_schema_chunk_proposals(chunks_list, card)
 
     # 2) aggregate document-level
+    _log.info("Aggregating %d chunk proposals", len(chunk_proposals))
     aggregated = aggregate_chunk_proposals(chunk_proposals)
 
     write_json(out, aggregated)
@@ -100,6 +122,7 @@ def cmd_build_schema_card(
     prev = read_json(previous)
     prop = read_json(proposal)
 
+    _log.info("Building schema card: previous=%s proposal=%s", previous, proposal)
     new_card = schema_card_from_proposal(prev, prop, namespace=namespace)
     write_json(out, new_card)
     typer.echo(f"OK build-schema-card: out={out}")
@@ -115,6 +138,8 @@ def cmd_export_schema_ttl(
     Export a schema proposal JSON into a staging OWL/RDFS Turtle file.
     """
     prop = read_json(proposal)
+
+    _log.info("Exporting schema TTL: namespace=%s", namespace)
     g = proposal_to_ttl(prop, biz_ns=namespace)
 
     Path(out).parent.mkdir(parents=True, exist_ok=True)
@@ -131,6 +156,7 @@ def cmd_load_ttl(
     Upload a TTL file into Blazegraph into a specific named graph.
     Requires BLAZEGRAPH_ENDPOINT env var (SPARQL endpoint).
     """
+    _log.info("Uploading TTL %s to graph <%s>", file, graph)
     blazegraph_upload_ttl(file, graph)
     typer.echo(f"OK load-ttl: file={file} graph={graph}")
 
@@ -143,6 +169,8 @@ def cmd_sparql_update(
     Execute a SPARQL UPDATE against Blazegraph. Dangerous if you point at prod.
     """
     q = Path(query_file).read_text(encoding="utf-8")
+    _log.info("Executing SPARQL UPDATE from %s (%d chars)", query_file, len(q))
+    _log.debug("Query:\n%s", q)
     blazegraph_sparql_update(q)
     typer.echo("OK sparql-update")
 
@@ -165,11 +193,14 @@ def cmd_extract_instances(
     # index chunks by chunk_id for provenance
     chunks_by_id = {c.get("chunk_id"): c for c in chunks_list if c.get("chunk_id")}
 
+    _log.info("Extracting instances from %d chunks", len(chunks_list))
+
     # 1) LLM: per-chunk instance proposals
     proposals = extract_instance_chunk_proposals(chunks_list, card)
 
     # 2) JSON -> RDF graph
     ns = card.get("namespace") or "http://www.example.com/biz/"
+    _log.info("Converting %d proposals to RDF (namespace=%s)", len(proposals), ns)
     g = instance_proposals_to_graph(chunks_by_id, proposals, namespace=ns)
 
     Path(out_ttl).parent.mkdir(parents=True, exist_ok=True)
@@ -198,6 +229,7 @@ def cmd_sparql_server(
     import uvicorn
     from ontorag.sparql_server import create_app
 
+    _log.info("Starting SPARQL server on %s:%d", host, port)
     api = create_app(
         ontology_ttl=onto,
         instances_ttl=inst,
@@ -209,14 +241,9 @@ def cmd_sparql_server(
 
 @app.command("mcp-server")
 def cmd_mcp_server(
-    # Modalità local TTL
     onto: Optional[str] = typer.Option(None, help="Ontology TTL path (local mode)"),
     inst: Optional[str] = typer.Option(None, help="Instances TTL path (local mode)"),
-
-    # Modalità remote SPARQL
     sparql_endpoint: Optional[str] = typer.Option(None, help="Remote SPARQL endpoint (Blazegraph/QLever)"),
-
-    # Server options
     host: str = typer.Option("0.0.0.0", help="Bind host"),
     port: int = typer.Option(9010, help="Bind port"),
 ):
@@ -229,14 +256,16 @@ def cmd_mcp_server(
     from ontorag.mcp_server import create_mcp_app
 
     if sparql_endpoint:
+        _log.info("MCP server: remote backend at %s", sparql_endpoint)
         backend = RemoteSparqlBackend(sparql_endpoint)
     else:
         if not onto or not inst:
             raise typer.BadParameter("Provide --sparql-endpoint OR both --onto and --inst")
+        _log.info("MCP server: local backend onto=%s inst=%s", onto, inst)
         backend = LocalRdfBackend(onto, inst)
 
     app_mcp = create_mcp_app(backend)
-    # fastmcp run
+    _log.info("Starting MCP server on %s:%d", host, port)
     app_mcp.run(host=host, port=port)
 
 
@@ -259,6 +288,7 @@ def cmd_ontology_mcp(
     """
     from ontorag.ontology_mcp import create_ontology_mcp
 
+    _log.info("Starting ontology catalog MCP on %s:%d (catalog=%s)", host, port, catalog)
     mcp_app = create_ontology_mcp(catalog)
     mcp_app.run(host=host, port=port)
 
@@ -278,6 +308,7 @@ def cmd_register_ontology(
     """
     from ontorag.ontology_catalog import register_ontology
 
+    _log.info("Registering ontology: slug=%s ttl=%s", slug, ttl)
     tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
 
     entry = register_ontology(
@@ -309,6 +340,7 @@ def cmd_init_schema_card(
     if not slugs:
         raise typer.BadParameter("Provide at least one baseline slug.")
 
+    _log.info("Composing baselines: %s", slugs)
     card = compose_baselines(catalog, slugs, target_namespace=namespace)
     write_json(out, card)
 
