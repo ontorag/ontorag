@@ -12,6 +12,7 @@ dependencies = [
   "uvicorn>=0.29.0",
   "fastmcp>=0.1.0",
 ]
+requires-python = ">=3.12,<3.13"
 
 [project.scripts]
 ontorag = "ontorag.cli:main"
