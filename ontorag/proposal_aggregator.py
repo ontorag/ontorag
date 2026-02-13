@@ -2,6 +2,10 @@
 from __future__ import annotations
 from typing import List, Dict, Any, Tuple
 
+from ontorag.verbosity import get_logger
+
+_log = get_logger("ontorag.proposal_aggregator")
+
 def _key(name: str) -> str:
     return (name or "").strip().lower()
 
@@ -52,6 +56,8 @@ def _normalize_evidence(ev: Any, default_chunk_id: str = "") -> List[Dict[str, s
     return out
 
 def aggregate_chunk_proposals(chunk_props: List[Dict[str, Any]]) -> Dict[str, Any]:
+    _log.info("Aggregating %d chunk proposals", len(chunk_props))
+
     classes: Dict[str, Dict[str, Any]] = {}
     dprops: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
     oprops: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
@@ -204,6 +210,14 @@ def aggregate_chunk_proposals(chunk_props: List[Dict[str, Any]]) -> Dict[str, An
         if s and s not in seen_w:
             warnings_out.append(s)
             seen_w.add(s)
+
+    _log.info(
+        "Aggregation result: classes=%d dt_props=%d obj_props=%d events=%d warnings=%d",
+        len(classes), len(dprops), len(oprops), len(events), len(warnings_out),
+    )
+    _log.debug("Classes: %s", [v["name"] for v in classes.values()])
+    _log.debug("Datatype properties: %s", [v["name"] for v in dprops.values()])
+    _log.debug("Object properties: %s", [v["name"] for v in oprops.values()])
 
     return {
         "classes": list(classes.values()),

@@ -17,6 +17,10 @@ from typing import Any, Dict, List, Optional
 from rdflib import Graph, Namespace, URIRef
 from rdflib.namespace import RDF, RDFS, OWL, XSD
 
+from ontorag.verbosity import get_logger
+
+_log = get_logger("ontorag.ontology_catalog")
+
 # ── XSD → schema-card range mapping ──────────────────────────────────
 
 _XSD_RANGE_MAP = {
@@ -78,12 +82,15 @@ def ttl_to_schema_card(
     Parse an OWL/RDFS Turtle file and return a schema-card-format dict.
     Every item gets ``origin`` set to *slug*.
     """
+    _log.info("Parsing TTL %s (slug=%s)", ttl_path, slug)
     g = Graph()
     g.parse(ttl_path, format="turtle")
+    _log.debug("Parsed %d triples from %s", len(g), ttl_path)
 
     # auto-detect namespace from the most common subject prefix
     if namespace is None:
         namespace = _guess_namespace(g)
+        _log.debug("Auto-detected namespace: %s", namespace)
 
     classes: List[Dict[str, Any]] = []
     datatype_properties: List[Dict[str, Any]] = []
@@ -141,6 +148,10 @@ def ttl_to_schema_card(
             "origin": slug,
         })
 
+    _log.info(
+        "TTL->card for %s: classes=%d dt_props=%d obj_props=%d",
+        slug, len(classes), len(datatype_properties), len(object_properties),
+    )
     return {
         "namespace": namespace or "",
         "classes": classes,
@@ -200,6 +211,7 @@ def register_ontology(
     Copy a TTL file into the catalog and register it in the manifest.
     Returns the catalog entry.
     """
+    _log.info("Registering ontology: slug=%s from %s", slug, ttl_path)
     catalog = load_catalog(catalog_dir)
     dest = Path(catalog_dir) / f"{slug}.ttl"
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -207,6 +219,7 @@ def register_ontology(
     # Copy TTL content
     src_content = Path(ttl_path).read_text(encoding="utf-8")
     dest.write_text(src_content, encoding="utf-8")
+    _log.debug("Copied TTL to %s (%d chars)", dest, len(src_content))
 
     # Auto-detect namespace if not provided
     if namespace is None:
@@ -230,6 +243,7 @@ def register_ontology(
     catalog["ontologies"].sort(key=lambda e: e.get("slug", ""))
 
     save_catalog(catalog_dir, catalog)
+    _log.info("Registered ontology %s (namespace=%s)", slug, namespace)
     return entry
 
 
@@ -244,6 +258,7 @@ def compose_baselines(
     """
     from ontorag.schema_card import _ensure_schema_card_defaults
 
+    _log.info("Composing baselines: %s", slugs)
     merged = _ensure_schema_card_defaults({})
     if target_namespace:
         merged["namespace"] = target_namespace
@@ -278,6 +293,11 @@ def compose_baselines(
             k = (p["domain"].lower(), p["name"].lower(), p["range"].lower())
             if k not in seen_oprops:
                 seen_oprops[k] = p
+
+    _log.info(
+        "Composition result: classes=%d dt_props=%d obj_props=%d",
+        len(seen_classes), len(seen_dprops), len(seen_oprops),
+    )
 
     merged["classes"] = sorted(seen_classes.values(), key=lambda x: x["name"].lower())
     merged["datatype_properties"] = sorted(

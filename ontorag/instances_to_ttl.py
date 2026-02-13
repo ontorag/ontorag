@@ -5,6 +5,10 @@ from typing import Dict, Any, List, Optional
 from rdflib import Graph, Namespace, URIRef, BNode, Literal
 from rdflib.namespace import RDF, RDFS, XSD
 
+from ontorag.verbosity import get_logger
+
+_log = get_logger("ontorag.instances_to_ttl")
+
 PROV = Namespace("http://www.w3.org/ns/prov#")
 
 def _slug(s: str) -> str:
@@ -20,14 +24,17 @@ def instance_proposals_to_graph(
     proposals: List[Dict[str, Any]],
     namespace: str,
 ) -> Graph:
+    _log.info("Converting %d proposals to RDF (namespace=%s)", len(proposals), namespace)
+
     BIZ = Namespace(namespace)
-    MCP = Namespace(namespace + "mcp/")  # semplice: same base + mcp/
+    MCP = Namespace(namespace + "mcp/")
     g = Graph()
     g.bind("biz", BIZ)
     g.bind("prov", PROV)
     g.bind("rdfs", RDFS)
     g.bind("mcp", MCP)
 
+    instance_count = 0
     for cp in proposals:
         chunk_id = cp.get("chunk_id", "")
         chunk = chunk_dtos_by_id.get(chunk_id, {})
@@ -45,6 +52,8 @@ def instance_proposals_to_graph(
             g.add((s, RDF.type, URIRef(f"{namespace}{cls_name}")))
             if label:
                 g.add((s, RDFS.label, Literal(label)))
+            instance_count += 1
+            _log.debug("  instance: %s (%s) label=%r", cls_name, iri, label)
 
             # attributes (datatype properties): stored as literals
             attrs = inst.get("attributes", {}) or {}
@@ -96,4 +105,5 @@ def instance_proposals_to_graph(
                 # link instance -> mention
                 g.add((s, PROV.wasDerivedFrom, mn))
 
+    _log.info("Instance graph built: %d instances, %d triples", instance_count, len(g))
     return g

@@ -10,6 +10,10 @@ import requests
 from rdflib import Graph
 from rdflib.plugins.sparql.processor import SPARQLResult
 
+from ontorag.verbosity import get_logger
+
+_log = get_logger("ontorag.mcp_backend")
+
 
 class SparqlBackend(ABC):
     """Abstract backend exposing select() and construct() over a SPARQL store."""
@@ -27,9 +31,11 @@ class LocalRdfBackend(SparqlBackend):
     """In-memory rdflib backend loaded from local TTL files."""
 
     def __init__(self, ontology_ttl: str, instances_ttl: str) -> None:
+        _log.info("LocalRdfBackend: loading onto=%s inst=%s", ontology_ttl, instances_ttl)
         self._graph = Graph()
         self._graph.parse(ontology_ttl, format="turtle")
         self._graph.parse(instances_ttl, format="turtle")
+        _log.info("LocalRdfBackend: loaded %d triples", len(self._graph))
 
     def select(self, query: str) -> Dict[str, Any]:
         result: SPARQLResult = self._graph.query(query)
@@ -62,6 +68,7 @@ class RemoteSparqlBackend(SparqlBackend):
 
     def __init__(self, endpoint: str) -> None:
         self._endpoint = endpoint
+        _log.info("RemoteSparqlBackend: endpoint=%s", endpoint)
 
     def select(self, query: str) -> Dict[str, Any]:
         r = requests.post(

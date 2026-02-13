@@ -6,6 +6,9 @@ from fastmcp import FastMCP
 from pydantic import BaseModel
 
 from ontorag.mcp_backend import SparqlBackend
+from ontorag.verbosity import get_logger
+
+_log = get_logger("ontorag.mcp_server")
 
 
 def _sanitize_iri(iri: str) -> str:
@@ -18,22 +21,26 @@ def _sanitize_iri(iri: str) -> str:
 
 
 def create_mcp_app(backend: SparqlBackend) -> FastMCP:
+    _log.info("Creating MCP app with backend %s", type(backend).__name__)
     app = FastMCP("ontorag-mcp")
 
     @app.tool()
     def sparql_select(query: str) -> Dict[str, Any]:
         """Run a SPARQL SELECT/ASK query and return SPARQL Results JSON."""
+        _log.debug("tool:sparql_select query=%d chars", len(query))
         return backend.select(query)
 
     @app.tool()
     def sparql_construct(query: str, accept: str = "text/turtle") -> Dict[str, Any]:
         """Run a SPARQL CONSTRUCT/DESCRIBE and return RDF as text."""
+        _log.debug("tool:sparql_construct query=%d chars accept=%s", len(query), accept)
         data = backend.construct(query, accept=accept)
         return {"content_type": accept, "data": data}
 
     @app.tool()
     def describe(iri: str, accept: str = "text/turtle") -> Dict[str, Any]:
         """DESCRIBE a resource by IRI."""
+        _log.debug("tool:describe iri=%s", iri)
         iri = _sanitize_iri(iri)
         q = f"DESCRIBE <{iri}>"
         data = backend.construct(q, accept=accept)
