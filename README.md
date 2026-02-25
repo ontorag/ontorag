@@ -74,9 +74,12 @@ Each class and property from a baseline carries an **`origin`** field (e.g., `"f
 
 ### 2. DTO-first ingestion
 
-Documents are parsed using best-in-class loaders (via LlamaIndex) into stable **DocumentDTO / ChunkDTO** objects.
+Documents are **content-hashed** (SHA-256) before any processing occurs. The document ID is derived from the hash, making ingestion **content-addressable**: the same file ingested from different paths or at different times produces the same `document_id`. If a document has already been ingested, the pipeline skips re-chunking automatically (`--force` to override).
+
+Documents are then parsed using best-in-class loaders (via LlamaIndex) into stable **DocumentDTO / ChunkDTO** objects.
 
 DTOs are:
+- content-addressable (same content = same document ID, no re-processing),
 - format-agnostic (PDF, Markdown, CSV, DOCX, HTML, EPUB, ...),
 - persistent (stored as JSON + JSONL),
 - replayable,
@@ -243,7 +246,16 @@ ontorag ontology-mcp --catalog ./data/ontologies --port 9020
 ```bash
 ontorag ingest data/raw/manual.pdf --out data/dto
 ontorag ingest data/raw/handbook.epub --out data/dto
+
+# Re-ingesting the same file is a no-op (content-hashed):
+ontorag ingest data/raw/manual.pdf --out data/dto
+# → SKIP ingest: already ingested (document_id=doc_..., hash=...)
+
+# Force re-ingest:
+ontorag ingest data/raw/manual.pdf --out data/dto --force
 ```
+
+The file is **content-hashed** (SHA-256) before chunking. If the same content was already ingested, the command skips processing and reports the existing document ID. Use `--force` to re-ingest anyway.
 
 Parses the file via LlamaIndex, splits into chunks (1024 tokens, 120 overlap), and stores DocumentDTO + ChunkDTOs as JSON + JSONL. Supported formats include PDF, DOCX, Markdown, HTML, CSV, EPUB, and more.
 

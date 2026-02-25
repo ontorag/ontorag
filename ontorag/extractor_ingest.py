@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Optional
 from ontorag.dto import (
     DocumentDTO, ChunkDTO, ProvenanceDTO,
-    stable_document_id, stable_chunk_id, hash_text
+    stable_document_id, stable_chunk_id, hash_text, hash_file
 )
 from ontorag.verbosity import get_logger
 
@@ -18,8 +18,9 @@ def extract_with_llamaindex(file_path: str, mime: Optional[str] = None) -> Docum
     from llama_index.core import SimpleDirectoryReader
     from llama_index.core.node_parser import SentenceSplitter
 
+    content_hash = hash_file(file_path)
     doc_id = stable_document_id(file_path)
-    _log.info("Ingesting %s (doc_id=%s)", file_path, doc_id)
+    _log.info("Ingesting %s (doc_id=%s, content_hash=%s)", file_path, doc_id, content_hash[:12])
 
     docs = SimpleDirectoryReader(input_files=[file_path]).load_data()
     _log.debug("LlamaIndex loaded %d raw documents", len(docs))
@@ -32,6 +33,7 @@ def extract_with_llamaindex(file_path: str, mime: Optional[str] = None) -> Docum
         document_id=doc_id,
         source_path=file_path,
         source_mime=mime,
+        content_hash=content_hash,
         title=None,
         chunks=[]
     )
