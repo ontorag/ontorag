@@ -13,6 +13,8 @@ dependencies = [
   "uvicorn>=0.29.0",
   "fastmcp>=0.1.0",
   "mcp>=1.0.0",
+  "EbookLib>=0.18",
+  "html2text>=2024.2.26",
 ]
 
 [project.scripts]
