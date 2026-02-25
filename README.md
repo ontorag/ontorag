@@ -171,6 +171,37 @@ OntoRAG provides **two MCP servers**:
 
 This allows LLM agents to both select their starting ontology and query the resulting knowledge graph.
 
+### 8. OntoRAG Hub
+
+The **Hub** is a GitHub-like infrastructure for ontology-driven RAG.  It exposes the full pipeline as a web API with a clear data-sovereignty model:
+
+```
+User (browser / agent)
+  │
+  ▼
+OntoRAG Hub API (FastAPI)
+  │  GitHub OAuth login → JWT session
+  │
+  ├── Ingest / Extract / Instances
+  │     │
+  │     ▼
+  │   User's private GitHub repo: {user}/ontorag-data
+  │     └── data/dto/  data/proposals/  data/instances/
+  │
+  └── Ontology Registry (central, shared)
+        └── schema cards → dynamic onto-mcp (near-zero storage)
+```
+
+**Key principles:**
+
+- **User data stays in the user's GitHub account.** DTOs, chunks, proposals, and instance TTLs are stored in a private repo (`ontorag-data`) created automatically via the GitHub API.  OntoRAG Hub never holds user documents on its own servers.
+
+- **Ontologies are centrally shared.** Published schema cards live on the Hub server and can be referenced by any user for extraction or composition.
+
+- **MCP servers are generated dynamically** from the ontology structure alone.  Since a schema card is just a small JSON file describing classes and properties, the resulting onto-mcp is nearly volume-less — it needs no user data, only the schema structure and SPARQL templates.
+
+- **Content-addressable dedup** applies at the Hub level too.  Uploading the same file content twice (even from different users) produces the same `document_id`, and the second ingest is skipped.
+
 ---
 
 ## Installation
@@ -180,7 +211,7 @@ pip install -e .
 ```
 
 Core dependencies (declared in `pyproject.toml`):
-`typer`, `requests`, `pydantic`, `rdflib`, `llama-index`, `python-dotenv`, `fastapi`, `uvicorn`, `fastmcp`, `EbookLib`, `html2text`.
+`typer`, `requests`, `pydantic`, `rdflib`, `llama-index`, `python-dotenv`, `fastapi`, `uvicorn`, `fastmcp`, `EbookLib`, `html2text`, `httpx`, `PyJWT`, `python-multipart`.
 
 ---
 
@@ -347,6 +378,34 @@ ontorag mcp-server \
   --sparql-endpoint http://localhost:9999/blazegraph/namespace/ontorag/sparql
 ```
 
+### Hub commands
+
+**Start the Hub API server:**
+
+```bash
+ontorag hub --port 8000
+```
+
+Required env vars: `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `HUB_JWT_SECRET`.
+
+**Hub API endpoints:**
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/auth/login` | -- | Redirect to GitHub OAuth |
+| GET | `/auth/callback?code=...` | -- | Exchange code for JWT |
+| GET | `/auth/me` | JWT | Current user profile |
+| POST | `/api/ingest` | JWT | Upload & chunk a file (multipart) |
+| POST | `/api/extract-schema` | JWT | Run ontology induction |
+| POST | `/api/extract-instances` | JWT | Extract instances |
+| GET | `/api/documents` | JWT | List user's ingested documents |
+| GET | `/api/ontologies` | -- | List centrally registered ontologies |
+| POST | `/api/ontologies` | JWT | Publish a schema card as shared ontology |
+| GET | `/api/ontologies/{slug}` | -- | Get a schema card |
+| GET | `/api/mcp/{slug}` | -- | Dynamic MCP endpoint info |
+
+User artifacts (DTOs, chunks, proposals, instances) are stored in the user's private `ontorag-data` GitHub repo.  Ontologies are stored centrally on the Hub server.
+
 ---
 
 ## End-to-end workflow
@@ -418,8 +477,8 @@ Origin is set when an item first enters the schema card and is preserved across 
 ```
 ontorag/
   __init__.py
-  cli.py                            # Typer CLI (12 commands)
-  dto.py                            # DocumentDTO, ChunkDTO, ProvenanceDTO
+  cli.py                            # Typer CLI (13 commands, incl. hub)
+  dto.py                            # DocumentDTO, ChunkDTO, ProvenanceDTO + content hashing
   extractor_ingest.py               # LlamaIndex document loading + chunking
   storage_jsonl.py                  # JSONL persistence for DTOs
   ontology_extractor_openrouter.py  # LLM schema proposal extraction
@@ -432,13 +491,24 @@ ontorag/
   sparql_server.py                  # FastAPI in-memory SPARQL endpoint
   mcp_backend.py                    # SparqlBackend ABC + Local/Remote impls
   mcp_server.py                     # Knowledge graph MCP server
+  mcp_client.py                     # Async SSE client for remote MCP
   ontology_catalog.py               # Baseline catalog + OWL/TTL converter
   ontology_mcp.py                   # Ontology catalog MCP server
+
+  hub/
+    __init__.py
+    app.py                          # Hub FastAPI app (all routes)
+    auth.py                         # GitHub OAuth + JWT sessions
+    github_storage.py               # Read/write artifacts to user's GitHub repos
+    models.py                       # Pydantic request/response models
+
+app.py                              # Vercel-deployed ontology catalog API
 
 data/
   ontologies/
     catalog.json                    # Ontology catalog manifest
     *.ttl                           # Registered baseline ontologies
+  hub_ontologies/                   # Central ontology registry (Hub)
 ```
 
 ---
