@@ -368,6 +368,29 @@ def cmd_init_schema_card(
     )
 
 
+@app.command("hub")
+def cmd_hub(
+    host: str = typer.Option("0.0.0.0", help="Bind host"),
+    port: int = typer.Option(8000, help="Bind port"),
+    reload: bool = typer.Option(False, help="Uvicorn auto-reload (dev only)"),
+):
+    """
+    Start the OntoRAG Hub API server.
+
+    GitHub-authenticated web API that orchestrates the full pipeline.
+    User data (DTOs, chunks, instances) is stored in the user's private
+    GitHub repo.  Ontologies are stored centrally and power dynamic
+    onto-mcp endpoints.
+
+    Required env vars: GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET, HUB_JWT_SECRET.
+    """
+    import uvicorn
+    from ontorag.hub.app import app as hub_app
+
+    _log.info("Starting OntoRAG Hub on %s:%d", host, port)
+    uvicorn.run(hub_app, host=host, port=port, reload=reload)
+
+
 def main():
     app()
 
