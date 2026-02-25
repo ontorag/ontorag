@@ -68,7 +68,7 @@ def write_text(path: str, text: str) -> None:
 
 @app.command("ingest")
 def cmd_ingest(
-    file: str = typer.Argument(..., help="Path to the input file (pdf/docx/md/html/csv/...)"),
+    file: str = typer.Argument(..., help="Path to the input file (pdf/docx/md/html/csv/epub/...)"),
     out: str = typer.Option("./data/dto", help="Output folder for DTO store"),
     mime: Optional[str] = typer.Option(None, help="Optional MIME type override"),
 ):

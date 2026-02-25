@@ -77,7 +77,7 @@ Each class and property from a baseline carries an **`origin`** field (e.g., `"f
 Documents are parsed using best-in-class loaders (via LlamaIndex) into stable **DocumentDTO / ChunkDTO** objects.
 
 DTOs are:
-- format-agnostic (PDF, Markdown, CSV, DOCX, HTML, ...),
+- format-agnostic (PDF, Markdown, CSV, DOCX, HTML, EPUB, ...),
 - persistent (stored as JSON + JSONL),
 - replayable,
 - provenance-aware (page, section, text snippet, source path).
@@ -177,7 +177,7 @@ pip install -e .
 ```
 
 Core dependencies (declared in `pyproject.toml`):
-`typer`, `requests`, `pydantic`, `rdflib`, `llama-index`, `python-dotenv`, `fastapi`, `uvicorn`, `fastmcp`.
+`typer`, `requests`, `pydantic`, `rdflib`, `llama-index`, `python-dotenv`, `fastapi`, `uvicorn`, `fastmcp`, `EbookLib`, `html2text`.
 
 ---
 
@@ -242,9 +242,10 @@ ontorag ontology-mcp --catalog ./data/ontologies --port 9020
 
 ```bash
 ontorag ingest data/raw/manual.pdf --out data/dto
+ontorag ingest data/raw/handbook.epub --out data/dto
 ```
 
-Parses the file via LlamaIndex, splits into chunks (1024 tokens, 120 overlap), and stores DocumentDTO + ChunkDTOs as JSON + JSONL.
+Parses the file via LlamaIndex, splits into chunks (1024 tokens, 120 overlap), and stores DocumentDTO + ChunkDTOs as JSON + JSONL. Supported formats include PDF, DOCX, Markdown, HTML, CSV, EPUB, and more.
 
 **Extract ontology proposals:**
 
