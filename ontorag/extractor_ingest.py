@@ -66,11 +66,28 @@ def _flatten_tree(
     return results
 
 
+def _ensure_pageindex_env() -> None:
+    """Bridge OntoRAG's OPENROUTER_* env vars to what PageIndex expects.
+
+    PageIndex reads API_KEY, LLM_MODEL, and (if the fork supports it)
+    LLM_ENDPOINT.  The upstream OpenAI client also respects
+    OPENAI_BASE_URL, which we set so that requests go through OpenRouter.
+    """
+    import os
+    if not os.environ.get("API_KEY") and os.environ.get("OPENROUTER_API_KEY"):
+        os.environ["API_KEY"] = os.environ["OPENROUTER_API_KEY"]
+    if not os.environ.get("OPENAI_BASE_URL") and os.environ.get("OPENROUTER_BASE_URL"):
+        os.environ["OPENAI_BASE_URL"] = os.environ["OPENROUTER_BASE_URL"]
+    if not os.environ.get("LLM_MODEL") and os.environ.get("OPENROUTER_MODEL"):
+        os.environ["LLM_MODEL"] = os.environ["OPENROUTER_MODEL"]
+
+
 def _extract_with_pageindex(file_path: str) -> tuple[Optional[str], List[Dict[str, Any]], List[str]]:
     """Run PageIndex on a PDF or Markdown file.
 
     Returns (doc_title, flat_chunks, pages).
     """
+    _ensure_pageindex_env()
     ext = Path(file_path).suffix.lower()
 
     if ext in {".md", ".markdown"}:
