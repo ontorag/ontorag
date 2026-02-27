@@ -11,7 +11,7 @@ from typing import Optional, List
 import typer
 
 from ontorag.dto import stable_document_id, hash_file
-from ontorag.extractor_ingest import extract_with_llamaindex
+from ontorag.extractor_ingest import extract_with_pageindex
 from ontorag.storage_jsonl import store_document_jsonl
 from ontorag.schema_card import schema_card_from_proposal
 from ontorag.proposal_aggregator import aggregate_chunk_proposals
@@ -75,7 +75,10 @@ def cmd_ingest(
     force: bool = typer.Option(False, "--force", "-f", help="Re-ingest even if the file was already processed"),
 ):
     """
-    Ingest a file using LlamaIndex and store DocumentDTO + ChunkDTO (JSON + JSONL).
+    Ingest a file and store DocumentDTO + ChunkDTO (JSON + JSONL).
+
+    Uses PageIndex for PDFs and Markdown (hierarchical section tree),
+    with fallback text extraction for other formats (DOCX, HTML, EPUB, …).
 
     Documents are content-hashed (SHA-256) before chunking. If the same content
     was already ingested, the command skips processing and reports the existing
@@ -91,7 +94,7 @@ def cmd_ingest(
         return
 
     _log.info("Ingesting file: %s", file)
-    doc = extract_with_llamaindex(file, mime=mime)
+    doc = extract_with_pageindex(file, mime=mime)
     _log.info("Storing %d chunks to %s", len(doc.chunks), out)
     store_document_jsonl(doc, out)
     typer.echo(f"OK ingest: document_id={doc.document_id} chunks={len(doc.chunks)} hash={content_hash[:12]} out={out}")

@@ -163,9 +163,9 @@ async def api_ingest(
         tmp_path = tmp.name
 
     try:
-        from ontorag.extractor_ingest import extract_with_llamaindex
+        from ontorag.extractor_ingest import extract_with_pageindex
 
-        doc = extract_with_llamaindex(tmp_path, mime=file.content_type)
+        doc = extract_with_pageindex(tmp_path, mime=file.content_type)
         # Override the document_id to match our content-hash based one
         doc.document_id = doc_id
         doc.content_hash = content_hash

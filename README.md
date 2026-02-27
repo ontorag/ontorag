@@ -76,7 +76,7 @@ Each class and property from a baseline carries an **`origin`** field (e.g., `"f
 
 Documents are **content-hashed** (SHA-256) before any processing occurs. The document ID is derived from the hash, making ingestion **content-addressable**: the same file ingested from different paths or at different times produces the same `document_id`. If a document has already been ingested, the pipeline skips re-chunking automatically (`--force` to override).
 
-Documents are then parsed using best-in-class loaders (via LlamaIndex) into stable **DocumentDTO / ChunkDTO** objects.
+Documents are then parsed using **PageIndex** (for PDFs and Markdown — hierarchical, reasoning-based section detection) with fallback text extraction for other formats.  The result is stable **DocumentDTO / ChunkDTO** objects.
 
 DTOs are:
 - content-addressable (same content = same document ID, no re-processing),
@@ -211,7 +211,7 @@ pip install -e .
 ```
 
 Core dependencies (declared in `pyproject.toml`):
-`typer`, `requests`, `pydantic`, `rdflib`, `llama-index`, `python-dotenv`, `fastapi`, `uvicorn`, `fastmcp`, `EbookLib`, `html2text`, `httpx`, `PyJWT`, `python-multipart`.
+`typer`, `requests`, `pydantic`, `rdflib`, `pageindex`, `pymupdf`, `python-dotenv`, `fastapi`, `uvicorn`, `fastmcp`, `EbookLib`, `html2text`, `httpx`, `PyJWT`, `python-multipart`.
 
 ---
 
@@ -288,7 +288,7 @@ ontorag ingest data/raw/manual.pdf --out data/dto --force
 
 The file is **content-hashed** (SHA-256) before chunking. If the same content was already ingested, the command skips processing and reports the existing document ID. Use `--force` to re-ingest anyway.
 
-Parses the file via LlamaIndex, splits into chunks (1024 tokens, 120 overlap), and stores DocumentDTO + ChunkDTOs as JSON + JSONL. Supported formats include PDF, DOCX, Markdown, HTML, CSV, EPUB, and more.
+Uses PageIndex for PDFs and Markdown (hierarchical section tree) with fallback text extraction for other formats (DOCX, HTML, CSV, EPUB, ...).  Stores DocumentDTO + ChunkDTOs as JSON + JSONL.
 
 **Extract ontology proposals:**
 
@@ -479,7 +479,7 @@ ontorag/
   __init__.py
   cli.py                            # Typer CLI (13 commands, incl. hub)
   dto.py                            # DocumentDTO, ChunkDTO, ProvenanceDTO + content hashing
-  extractor_ingest.py               # LlamaIndex document loading + chunking
+  extractor_ingest.py               # PageIndex doc parsing + fallback chunking
   storage_jsonl.py                  # JSONL persistence for DTOs
   ontology_extractor_openrouter.py  # LLM schema proposal extraction
   instance_extractor_openrouter.py  # LLM instance extraction
