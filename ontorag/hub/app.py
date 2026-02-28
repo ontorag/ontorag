@@ -132,6 +132,7 @@ def health():
 async def api_ingest(
     file: UploadFile = File(...),
     force: bool = Query(False, description="Re-ingest even if content was already processed"),
+    engine: str = Query("pageindex", description="Ingestion engine: 'pageindex' or 'llamaindex'"),
     user: CurrentUser = Depends(require_user),
 ):
     """
@@ -163,9 +164,9 @@ async def api_ingest(
         tmp_path = tmp.name
 
     try:
-        from ontorag.extractor_ingest import extract_with_pageindex
+        from ontorag.extractor_ingest import extract_document
 
-        doc = extract_with_pageindex(tmp_path, mime=file.content_type)
+        doc = extract_document(tmp_path, mime=file.content_type, engine=engine)
         # Override the document_id to match our content-hash based one
         doc.document_id = doc_id
         doc.content_hash = content_hash

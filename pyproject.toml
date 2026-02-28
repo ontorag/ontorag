@@ -21,6 +21,11 @@ dependencies = [
   "python-multipart>=0.0.9",
 ]
 
+[project.optional-dependencies]
+llamaindex = [
+  "llama-index>=0.10.0",
+]
+
 [project.scripts]
 ontorag = "ontorag.cli:main"
 

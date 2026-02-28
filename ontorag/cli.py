@@ -11,7 +11,7 @@ from typing import Optional, List
 import typer
 
 from ontorag.dto import stable_document_id, hash_file
-from ontorag.extractor_ingest import extract_with_pageindex
+from ontorag.extractor_ingest import extract_document
 from ontorag.storage_jsonl import store_document_jsonl
 from ontorag.schema_card import schema_card_from_proposal
 from ontorag.proposal_aggregator import aggregate_chunk_proposals
@@ -73,31 +73,33 @@ def cmd_ingest(
     out: str = typer.Option("./data/dto", help="Output folder for DTO store"),
     mime: Optional[str] = typer.Option(None, help="Optional MIME type override"),
     force: bool = typer.Option(False, "--force", "-f", help="Re-ingest even if the file was already processed"),
+    engine: str = typer.Option("pageindex", "--engine", "-e", help="Ingestion engine: 'pageindex' (hierarchical) or 'llamaindex' (fixed-size chunks)"),
 ):
     """
     Ingest a file and store DocumentDTO + ChunkDTO (JSON + JSONL).
 
-    Uses PageIndex for PDFs and Markdown (hierarchical section tree),
-    with fallback text extraction for other formats (DOCX, HTML, EPUB, …).
+    Two engines are available:
+
+      pageindex   — reasoning-based hierarchical section detection (default)
+      llamaindex  — traditional fixed-size chunking (1024 tokens, 120 overlap)
 
     Documents are content-hashed (SHA-256) before chunking. If the same content
-    was already ingested, the command skips processing and reports the existing
-    document ID. Use --force to re-ingest anyway.
+    was already ingested, the command skips processing. Use --force to re-ingest.
     """
     doc_id = stable_document_id(file)
     content_hash = hash_file(file)
-    _log.info("File %s -> doc_id=%s content_hash=%s", file, doc_id, content_hash[:12])
+    _log.info("File %s -> doc_id=%s content_hash=%s engine=%s", file, doc_id, content_hash[:12], engine)
 
     existing_doc = Path(out) / "documents" / f"{doc_id}.json"
     if existing_doc.exists() and not force:
         typer.echo(f"SKIP ingest: {file} already ingested (document_id={doc_id}, hash={content_hash[:12]}…). Use --force to re-ingest.")
         return
 
-    _log.info("Ingesting file: %s", file)
-    doc = extract_with_pageindex(file, mime=mime)
+    _log.info("Ingesting file: %s (engine=%s)", file, engine)
+    doc = extract_document(file, mime=mime, engine=engine)
     _log.info("Storing %d chunks to %s", len(doc.chunks), out)
     store_document_jsonl(doc, out)
-    typer.echo(f"OK ingest: document_id={doc.document_id} chunks={len(doc.chunks)} hash={content_hash[:12]} out={out}")
+    typer.echo(f"OK ingest: document_id={doc.document_id} chunks={len(doc.chunks)} engine={engine} hash={content_hash[:12]} out={out}")
 
 
 @app.command("extract-schema")
