@@ -150,12 +150,14 @@ def create_ontology_mcp(catalog_dir: str) -> FastMCP:
     def compose(slugs: List[str], target_namespace: str = "") -> Dict[str, Any]:
         """
         Compose multiple baseline ontologies into a single schema card.
-        Pass a list of ontology slugs. Returns a merged schema card
-        ready to use as the starting point for extraction.
+        Pass a list of ontology slugs. Resolves from local catalog first,
+        then falls back to the remote MCP server for missing slugs.
+        Returns a merged schema card ready to use as the starting point
+        for extraction.
         """
         _log.debug("tool:compose slugs=%s", slugs)
         ns = target_namespace or None
-        card = compose_baselines(catalog_dir, slugs, target_namespace=ns)
+        card = compose_baselines(catalog_dir, slugs, target_namespace=ns)  # inherits MCP fallback
         return {
             "baselines_used": slugs,
             "classes_count": len(card.get("classes", [])),
