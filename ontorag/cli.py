@@ -115,18 +115,50 @@ def cmd_extract_schema(
 
     chunks_list = read_jsonl(chunks)
     card = read_json(schema_card)
+    total = len(chunks_list)
 
-    _log.info("Running schema extraction on %d chunks", len(chunks_list))
+    typer.echo(f"extract-schema: {total} chunks to process")
+
+    # Running totals for the progress display
+    totals = {"classes": 0, "dt_props": 0, "obj_props": 0, "warnings": 0}
+
+    def _on_chunk(idx: int, total: int, chunk_id: str, data: dict) -> None:
+        adds = data.get("proposed_additions") or {}
+        n_cls = len(adds.get("classes", []))
+        n_dp = len(adds.get("datatype_properties", []))
+        n_op = len(adds.get("object_properties", []))
+        n_warn = len(data.get("warnings") or [])
+
+        totals["classes"] += n_cls
+        totals["dt_props"] += n_dp
+        totals["obj_props"] += n_op
+        totals["warnings"] += n_warn
+
+        typer.echo(
+            f"  [{idx + 1}/{total}] chunk {chunk_id}  "
+            f"+{n_cls} classes  +{n_dp} dt_props  +{n_op} obj_props  "
+            f"{n_warn} warnings  "
+            f"(cumulative: {totals['classes']}C {totals['dt_props']}D {totals['obj_props']}O {totals['warnings']}W)"
+        )
 
     # 1) per-chunk proposals (LLM)
-    chunk_proposals = extract_schema_chunk_proposals(chunks_list, card)
+    chunk_proposals = extract_schema_chunk_proposals(chunks_list, card, on_chunk_done=_on_chunk)
 
     # 2) aggregate document-level
-    _log.info("Aggregating %d chunk proposals", len(chunk_proposals))
+    typer.echo(f"Aggregating {len(chunk_proposals)} chunk proposals...")
     aggregated = aggregate_chunk_proposals(chunk_proposals)
 
+    agg_cls = len(aggregated.get("classes", []))
+    agg_dp = len(aggregated.get("datatype_properties", []))
+    agg_op = len(aggregated.get("object_properties", []))
+    agg_warn = len(aggregated.get("warnings", []))
+
     write_json(out, aggregated)
-    typer.echo(f"OK extract-schema: chunks={len(chunks_list)} proposals={len(chunk_proposals)} out={out}")
+    typer.echo(
+        f"OK extract-schema: {total} chunks -> "
+        f"{agg_cls} classes, {agg_dp} dt_props, {agg_op} obj_props, "
+        f"{agg_warn} warnings  out={out}"
+    )
 
 
 @app.command("build-schema-card")

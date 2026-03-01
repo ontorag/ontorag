@@ -3,7 +3,10 @@ from __future__ import annotations
 import json
 import os
 import time
-from typing import List, Dict, Any
+from typing import Callable, List, Dict, Any, Optional
+
+ChunkProgressCallback = Callable[[int, int, str, Dict[str, Any]], None]
+"""(chunk_index, total_chunks, chunk_id, proposal_or_error) → None"""
 
 import requests
 
@@ -85,7 +88,11 @@ def _chat_json(system: str, user: str) -> Dict[str, Any]:
 
     return json.loads(content)
 
-def extract_schema_chunk_proposals(chunks: List[Dict[str, Any]], schema_card: Dict[str, Any]) -> List[Dict[str, Any]]:
+def extract_schema_chunk_proposals(
+    chunks: List[Dict[str, Any]],
+    schema_card: Dict[str, Any],
+    on_chunk_done: Optional[ChunkProgressCallback] = None,
+) -> List[Dict[str, Any]]:
     system = "You are a careful ontology induction engine. Output JSON only."
     out: List[Dict[str, Any]] = []
     total = len(chunks)
@@ -105,6 +112,8 @@ def extract_schema_chunk_proposals(chunks: List[Dict[str, Any]], schema_card: Di
                 n_op = len((data.get("proposed_additions") or {}).get("object_properties", []))
                 _log.debug("  -> proposals: classes=%d dt_props=%d obj_props=%d", n_cls, n_dp, n_op)
                 out.append(data)
+                if on_chunk_done:
+                    on_chunk_done(i, total, chunk_id, data)
                 break
             except Exception as e:
                 _log.info("  Retry %d/3 for chunk %s: %s", attempt + 1, chunk_id, e)
