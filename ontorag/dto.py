@@ -38,6 +38,7 @@ class DocumentDTO(BaseModel):
     document_id: str
     source_path: str
     source_mime: Optional[str] = None
+    content_hash: Optional[str] = None
 
     title: Optional[str] = None
     created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"))
@@ -45,9 +46,19 @@ class DocumentDTO(BaseModel):
     chunks: List[ChunkDTO] = Field(default_factory=list)
 
 
+def hash_file(file_path: str) -> str:
+    """Return the SHA-256 hex digest of a file's raw bytes."""
+    h = hashlib.sha256()
+    with open(file_path, "rb") as f:
+        for block in iter(lambda: f.read(1 << 16), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
 def stable_document_id(source_path: str) -> str:
-    h = hashlib.sha1(source_path.encode("utf-8")).hexdigest()[:12]
-    return f"doc_{h}"
+    """Content-addressable document ID derived from the file bytes."""
+    content_hash = hash_file(source_path)
+    return f"doc_{content_hash[:16]}"
 
 
 def stable_chunk_id(document_id: str, chunk_index: int, page: Optional[int]) -> str:

@@ -74,10 +74,13 @@ Each class and property from a baseline carries an **`origin`** field (e.g., `"f
 
 ### 2. DTO-first ingestion
 
-Documents are parsed using best-in-class loaders (via LlamaIndex) into stable **DocumentDTO / ChunkDTO** objects.
+Documents are **content-hashed** (SHA-256) before any processing occurs. The document ID is derived from the hash, making ingestion **content-addressable**: the same file ingested from different paths or at different times produces the same `document_id`. If a document has already been ingested, the pipeline skips re-chunking automatically (`--force` to override).
+
+Documents are then parsed using **PageIndex** (for PDFs and Markdown — hierarchical, reasoning-based section detection) with fallback text extraction for other formats.  The result is stable **DocumentDTO / ChunkDTO** objects.
 
 DTOs are:
-- format-agnostic (PDF, Markdown, CSV, DOCX, HTML, ...),
+- content-addressable (same content = same document ID, no re-processing),
+- format-agnostic (PDF, Markdown, CSV, DOCX, HTML, EPUB, ...),
 - persistent (stored as JSON + JSONL),
 - replayable,
 - provenance-aware (page, section, text snippet, source path).
@@ -168,6 +171,37 @@ OntoRAG provides **two MCP servers**:
 
 This allows LLM agents to both select their starting ontology and query the resulting knowledge graph.
 
+### 8. OntoRAG Hub
+
+The **Hub** is a GitHub-like infrastructure for ontology-driven RAG.  It exposes the full pipeline as a web API with a clear data-sovereignty model:
+
+```
+User (browser / agent)
+  │
+  ▼
+OntoRAG Hub API (FastAPI)
+  │  GitHub OAuth login → JWT session
+  │
+  ├── Ingest / Extract / Instances
+  │     │
+  │     ▼
+  │   User's private GitHub repo: {user}/ontorag-data
+  │     └── data/dto/  data/proposals/  data/instances/
+  │
+  └── Ontology Registry (central, shared)
+        └── schema cards → dynamic onto-mcp (near-zero storage)
+```
+
+**Key principles:**
+
+- **User data stays in the user's GitHub account.** DTOs, chunks, proposals, and instance TTLs are stored in a private repo (`ontorag-data`) created automatically via the GitHub API.  OntoRAG Hub never holds user documents on its own servers.
+
+- **Ontologies are centrally shared.** Published schema cards live on the Hub server and can be referenced by any user for extraction or composition.
+
+- **MCP servers are generated dynamically** from the ontology structure alone.  Since a schema card is just a small JSON file describing classes and properties, the resulting onto-mcp is nearly volume-less — it needs no user data, only the schema structure and SPARQL templates.
+
+- **Content-addressable dedup** applies at the Hub level too.  Uploading the same file content twice (even from different users) produces the same `document_id`, and the second ingest is skipped.
+
 ---
 
 ## Installation
@@ -177,7 +211,7 @@ pip install -e .
 ```
 
 Core dependencies (declared in `pyproject.toml`):
-`typer`, `requests`, `pydantic`, `rdflib`, `llama-index`, `python-dotenv`, `fastapi`, `uvicorn`, `fastmcp`.
+`typer`, `requests`, `pydantic`, `rdflib`, `pageindex`, `pymupdf`, `python-dotenv`, `fastapi`, `uvicorn`, `fastmcp`, `EbookLib`, `html2text`, `httpx`, `PyJWT`, `python-multipart`.
 
 ---
 
@@ -242,9 +276,19 @@ ontorag ontology-mcp --catalog ./data/ontologies --port 9020
 
 ```bash
 ontorag ingest data/raw/manual.pdf --out data/dto
+ontorag ingest data/raw/handbook.epub --out data/dto
+
+# Re-ingesting the same file is a no-op (content-hashed):
+ontorag ingest data/raw/manual.pdf --out data/dto
+# → SKIP ingest: already ingested (document_id=doc_..., hash=...)
+
+# Force re-ingest:
+ontorag ingest data/raw/manual.pdf --out data/dto --force
 ```
 
-Parses the file via LlamaIndex, splits into chunks (1024 tokens, 120 overlap), and stores DocumentDTO + ChunkDTOs as JSON + JSONL.
+The file is **content-hashed** (SHA-256) before chunking. If the same content was already ingested, the command skips processing and reports the existing document ID. Use `--force` to re-ingest anyway.
+
+Uses PageIndex for PDFs and Markdown (hierarchical section tree) with fallback text extraction for other formats (DOCX, HTML, CSV, EPUB, ...).  Stores DocumentDTO + ChunkDTOs as JSON + JSONL.
 
 **Extract ontology proposals:**
 
@@ -334,6 +378,34 @@ ontorag mcp-server \
   --sparql-endpoint http://localhost:9999/blazegraph/namespace/ontorag/sparql
 ```
 
+### Hub commands
+
+**Start the Hub API server:**
+
+```bash
+ontorag hub --port 8000
+```
+
+Required env vars: `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `HUB_JWT_SECRET`.
+
+**Hub API endpoints:**
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/auth/login` | -- | Redirect to GitHub OAuth |
+| GET | `/auth/callback?code=...` | -- | Exchange code for JWT |
+| GET | `/auth/me` | JWT | Current user profile |
+| POST | `/api/ingest` | JWT | Upload & chunk a file (multipart) |
+| POST | `/api/extract-schema` | JWT | Run ontology induction |
+| POST | `/api/extract-instances` | JWT | Extract instances |
+| GET | `/api/documents` | JWT | List user's ingested documents |
+| GET | `/api/ontologies` | -- | List centrally registered ontologies |
+| POST | `/api/ontologies` | JWT | Publish a schema card as shared ontology |
+| GET | `/api/ontologies/{slug}` | -- | Get a schema card |
+| GET | `/api/mcp/{slug}` | -- | Dynamic MCP endpoint info |
+
+User artifacts (DTOs, chunks, proposals, instances) are stored in the user's private `ontorag-data` GitHub repo.  Ontologies are stored centrally on the Hub server.
+
 ---
 
 ## End-to-end workflow
@@ -405,9 +477,9 @@ Origin is set when an item first enters the schema card and is preserved across 
 ```
 ontorag/
   __init__.py
-  cli.py                            # Typer CLI (12 commands)
-  dto.py                            # DocumentDTO, ChunkDTO, ProvenanceDTO
-  extractor_ingest.py               # LlamaIndex document loading + chunking
+  cli.py                            # Typer CLI (13 commands, incl. hub)
+  dto.py                            # DocumentDTO, ChunkDTO, ProvenanceDTO + content hashing
+  extractor_ingest.py               # PageIndex doc parsing + fallback chunking
   storage_jsonl.py                  # JSONL persistence for DTOs
   ontology_extractor_openrouter.py  # LLM schema proposal extraction
   instance_extractor_openrouter.py  # LLM instance extraction
@@ -419,13 +491,24 @@ ontorag/
   sparql_server.py                  # FastAPI in-memory SPARQL endpoint
   mcp_backend.py                    # SparqlBackend ABC + Local/Remote impls
   mcp_server.py                     # Knowledge graph MCP server
+  mcp_client.py                     # Async SSE client for remote MCP
   ontology_catalog.py               # Baseline catalog + OWL/TTL converter
   ontology_mcp.py                   # Ontology catalog MCP server
+
+  hub/
+    __init__.py
+    app.py                          # Hub FastAPI app (all routes)
+    auth.py                         # GitHub OAuth + JWT sessions
+    github_storage.py               # Read/write artifacts to user's GitHub repos
+    models.py                       # Pydantic request/response models
+
+app.py                              # Vercel-deployed ontology catalog API
 
 data/
   ontologies/
     catalog.json                    # Ontology catalog manifest
     *.ttl                           # Registered baseline ontologies
+  hub_ontologies/                   # Central ontology registry (Hub)
 ```
 
 ---

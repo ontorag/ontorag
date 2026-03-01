@@ -10,7 +10,8 @@ from typing import Optional, List
 
 import typer
 
-from ontorag.extractor_ingest import extract_with_llamaindex
+from ontorag.dto import stable_document_id, hash_file
+from ontorag.extractor_ingest import extract_document
 from ontorag.storage_jsonl import store_document_jsonl
 from ontorag.schema_card import schema_card_from_proposal
 from ontorag.proposal_aggregator import aggregate_chunk_proposals
@@ -68,18 +69,37 @@ def write_text(path: str, text: str) -> None:
 
 @app.command("ingest")
 def cmd_ingest(
-    file: str = typer.Argument(..., help="Path to the input file (pdf/docx/md/html/csv/...)"),
+    file: str = typer.Argument(..., help="Path to the input file (pdf/docx/md/html/csv/epub/...)"),
     out: str = typer.Option("./data/dto", help="Output folder for DTO store"),
     mime: Optional[str] = typer.Option(None, help="Optional MIME type override"),
+    force: bool = typer.Option(False, "--force", "-f", help="Re-ingest even if the file was already processed"),
+    engine: str = typer.Option("pageindex", "--engine", "-e", help="Ingestion engine: 'pageindex' (hierarchical) or 'llamaindex' (fixed-size chunks)"),
 ):
     """
-    Ingest a file using LlamaIndex and store DocumentDTO + ChunkDTO (JSON + JSONL).
+    Ingest a file and store DocumentDTO + ChunkDTO (JSON + JSONL).
+
+    Two engines are available:
+
+      pageindex   — reasoning-based hierarchical section detection (default)
+      llamaindex  — traditional fixed-size chunking (1024 tokens, 120 overlap)
+
+    Documents are content-hashed (SHA-256) before chunking. If the same content
+    was already ingested, the command skips processing. Use --force to re-ingest.
     """
-    _log.info("Ingesting file: %s", file)
-    doc = extract_with_llamaindex(file, mime=mime)
+    doc_id = stable_document_id(file)
+    content_hash = hash_file(file)
+    _log.info("File %s -> doc_id=%s content_hash=%s engine=%s", file, doc_id, content_hash[:12], engine)
+
+    existing_doc = Path(out) / "documents" / f"{doc_id}.json"
+    if existing_doc.exists() and not force:
+        typer.echo(f"SKIP ingest: {file} already ingested (document_id={doc_id}, hash={content_hash[:12]}…). Use --force to re-ingest.")
+        return
+
+    _log.info("Ingesting file: %s (engine=%s)", file, engine)
+    doc = extract_document(file, mime=mime, engine=engine)
     _log.info("Storing %d chunks to %s", len(doc.chunks), out)
     store_document_jsonl(doc, out)
-    typer.echo(f"OK ingest: document_id={doc.document_id} chunks={len(doc.chunks)} out={out}")
+    typer.echo(f"OK ingest: document_id={doc.document_id} chunks={len(doc.chunks)} engine={engine} hash={content_hash[:12]} out={out}")
 
 
 @app.command("extract-schema")
@@ -351,6 +371,29 @@ def cmd_init_schema_card(
         f"OK init-schema-card: baselines={slugs} "
         f"classes={cls_count} datatype_props={dp_count} object_props={op_count} out={out}"
     )
+
+
+@app.command("hub")
+def cmd_hub(
+    host: str = typer.Option("0.0.0.0", help="Bind host"),
+    port: int = typer.Option(8000, help="Bind port"),
+    reload: bool = typer.Option(False, help="Uvicorn auto-reload (dev only)"),
+):
+    """
+    Start the OntoRAG Hub API server.
+
+    GitHub-authenticated web API that orchestrates the full pipeline.
+    User data (DTOs, chunks, instances) is stored in the user's private
+    GitHub repo.  Ontologies are stored centrally and power dynamic
+    onto-mcp endpoints.
+
+    Required env vars: GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET, HUB_JWT_SECRET.
+    """
+    import uvicorn
+    from ontorag.hub.app import app as hub_app
+
+    _log.info("Starting OntoRAG Hub on %s:%d", host, port)
+    uvicorn.run(hub_app, host=host, port=port, reload=reload)
 
 
 def main():
