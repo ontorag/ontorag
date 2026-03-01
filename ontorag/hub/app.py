@@ -132,7 +132,7 @@ def health():
 async def api_ingest(
     file: UploadFile = File(...),
     force: bool = Query(False, description="Re-ingest even if content was already processed"),
-    engine: str = Query("pageindex", description="Ingestion engine: 'pageindex' or 'llamaindex'"),
+    engine: str = Query("llamaindex", description="Ingestion engine: 'llamaindex' (default) or 'pageindex'"),
     user: CurrentUser = Depends(require_user),
 ):
     """

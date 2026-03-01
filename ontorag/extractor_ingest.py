@@ -2,14 +2,14 @@
 """
 Document ingestion with two selectable engines:
 
-  - **pageindex** (default) — reasoning-based hierarchical section
-    detection via PageIndex.  Produces a tree of natural document
-    sections (PDF/Markdown), flattened into ChunkDTOs with section
-    path provenance.  Falls back to text extraction for other formats.
+  - **llamaindex** (default) — traditional fixed-size chunking via
+    LlamaIndex SimpleDirectoryReader + SentenceSplitter.  Broad format
+    support out of the box.
 
-  - **llamaindex** — traditional fixed-size chunking via LlamaIndex
-    SimpleDirectoryReader + SentenceSplitter.  Broad format support
-    out of the box.
+  - **pageindex** — reasoning-based hierarchical section detection via
+    the PageIndex hosted API.  Produces a tree of natural document
+    sections (PDF), flattened into ChunkDTOs with section path
+    provenance.  Requires a PAGEINDEX_API_KEY.
 
 Both engines produce the same DocumentDTO / ChunkDTO output.
 """
@@ -26,8 +26,9 @@ from ontorag.verbosity import get_logger
 
 _log = get_logger("ontorag.extractor_ingest")
 
-# Formats that PageIndex handles natively
-_PAGEINDEX_EXTS = {".pdf", ".md", ".markdown"}
+# Formats that PageIndex API handles natively (PDF only; MD uses local splitter)
+_PAGEINDEX_EXTS = {".pdf"}
+_MARKDOWN_EXTS = {".md", ".markdown"}
 
 
 def clean_snippet(text: str, max_len: int = 240) -> str:
@@ -69,61 +70,115 @@ def _flatten_tree(
     return results
 
 
-def _ensure_pageindex_env() -> None:
-    """Bridge OntoRAG's OPENROUTER_* env vars to what PageIndex expects."""
+def _get_pageindex_client():
+    """Return a PageIndexClient using PAGEINDEX_API_KEY from env."""
     import os
-    if not os.environ.get("API_KEY") and os.environ.get("OPENROUTER_API_KEY"):
-        os.environ["API_KEY"] = os.environ["OPENROUTER_API_KEY"]
-    if not os.environ.get("OPENAI_BASE_URL") and os.environ.get("OPENROUTER_BASE_URL"):
-        os.environ["OPENAI_BASE_URL"] = os.environ["OPENROUTER_BASE_URL"]
-    if not os.environ.get("LLM_MODEL") and os.environ.get("OPENROUTER_MODEL"):
-        os.environ["LLM_MODEL"] = os.environ["OPENROUTER_MODEL"]
+    from pageindex import PageIndexClient
+
+    api_key = os.environ.get("PAGEINDEX_API_KEY")
+    if not api_key:
+        raise RuntimeError(
+            "PAGEINDEX_API_KEY is not set. "
+            "Get an API key at https://pageindex.ai and add it to your .env"
+        )
+    return PageIndexClient(api_key=api_key)
+
+
+def _poll_until_ready(client, doc_id: str, timeout: int = 300, interval: int = 3) -> None:
+    """Poll document status until processing completes or times out."""
+    import time
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        meta = client.get_document(doc_id)
+        status = meta.get("status", "")
+        if status == "completed":
+            return
+        if status == "failed":
+            raise RuntimeError(f"PageIndex processing failed for doc_id={doc_id}")
+        _log.debug("  doc %s status=%s, polling…", doc_id, status)
+        time.sleep(interval)
+    raise TimeoutError(f"PageIndex processing timed out after {timeout}s for doc_id={doc_id}")
 
 
 def _run_pageindex(file_path: str) -> tuple[Optional[str], List[Dict[str, Any]], List[str]]:
-    """Run PageIndex on a PDF or Markdown file.
+    """Submit a PDF to the PageIndex API and retrieve tree + OCR.
 
     Returns (doc_title, flat_chunks, pages).
     """
-    _ensure_pageindex_env()
-    ext = Path(file_path).suffix.lower()
+    client = _get_pageindex_client()
 
-    if ext in {".md", ".markdown"}:
-        import asyncio
-        from pageindex import md_to_tree
+    _log.info("Submitting %s to PageIndex API…", file_path)
+    resp = client.submit_document(file_path)
+    doc_id = resp["doc_id"]
+    _log.info("  doc_id=%s — waiting for processing…", doc_id)
 
-        md_text = Path(file_path).read_text(encoding="utf-8")
-        tree = asyncio.run(md_to_tree(
-            md_path=file_path,
-            if_add_node_text="yes",
-            if_add_node_id="yes",
-            if_add_node_summary="no",
-        ))
-        pages = md_text.split("\n")
-        doc_title = tree.get("title")
-        structure = tree.get("structure", tree.get("nodes", []))
-        flat = _flatten_tree(structure, pages, [])
-        return doc_title, flat, pages
+    _poll_until_ready(client, doc_id)
 
-    # PDF path
-    from pageindex import page_index
-    from pageindex.utils import get_page_tokens
+    tree_resp = client.get_tree(doc_id)
+    ocr_resp = client.get_ocr(doc_id, format="page")
 
-    result = page_index(
-        doc=file_path,
-        if_add_node_text="yes",
-        if_add_node_id="yes",
-        if_add_node_summary="no",
-    )
-
-    doc_title = result.get("doc_name")
-    structure = result.get("structure", [])
-
-    page_tuples = get_page_tokens(file_path)
-    pages = [pt[0] for pt in page_tuples]
+    doc_title = tree_resp.get("doc_name")
+    structure = tree_resp.get("structure", [])
+    pages = [p.get("text", "") for p in ocr_resp.get("pages", [])]
 
     flat = _flatten_tree(structure, pages, [])
     return doc_title, flat, pages
+
+
+# ── Local Markdown section-aware chunker ─────────────────────────────
+
+import re
+_HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)", re.MULTILINE)
+
+
+def _run_markdown_splitter(file_path: str) -> tuple[Optional[str], List[Dict[str, Any]], List[str]]:
+    """Split a Markdown file into chunks along heading boundaries.
+
+    Returns (doc_title, flat_chunks, pages) where pages is the raw lines.
+    """
+    md_text = Path(file_path).read_text(encoding="utf-8")
+    lines = md_text.split("\n")
+
+    # Build list of (level, title, start_line)
+    headings: list[tuple[int, str, int]] = []
+    for m in _HEADING_RE.finditer(md_text):
+        level = len(m.group(1))
+        title = m.group(2).strip()
+        line_no = md_text[:m.start()].count("\n")
+        headings.append((level, title, line_no))
+
+    if not headings:
+        # No headings — return entire file as one chunk
+        return None, [{"text": md_text, "section": "", "start_page": 0, "end_page": len(lines) - 1, "title": ""}], lines
+
+    doc_title = headings[0][1] if headings[0][0] == 1 else None
+
+    # Build section spans
+    flat: List[Dict[str, Any]] = []
+    path_stack: list[tuple[int, str]] = []
+
+    for idx, (level, title, start_line) in enumerate(headings):
+        end_line = headings[idx + 1][2] - 1 if idx + 1 < len(headings) else len(lines) - 1
+
+        # Maintain a breadcrumb stack
+        while path_stack and path_stack[-1][0] >= level:
+            path_stack.pop()
+        path_stack.append((level, title))
+        section = " > ".join(t for _, t in path_stack)
+
+        text = "\n".join(lines[start_line:end_line + 1]).strip()
+        if not text:
+            continue
+        flat.append({
+            "text": text,
+            "section": section,
+            "start_page": start_line,
+            "end_page": end_line,
+            "title": title,
+        })
+
+    return doc_title, flat, lines
 
 
 # ── Fallback text extraction (used by PageIndex for non-PDF/MD) ──────
@@ -181,8 +236,32 @@ def extract_with_pageindex(file_path: str, mime: Optional[str] = None) -> Docume
         source_mime=mime, content_hash=content_hash, title=None, chunks=[],
     )
 
-    if ext in _PAGEINDEX_EXTS:
-        _log.info("Using PageIndex for %s", ext)
+    if ext in _MARKDOWN_EXTS:
+        _log.info("Using local Markdown splitter for %s", ext)
+        doc_title, flat_chunks, _pages = _run_markdown_splitter(file_path)
+        out.title = doc_title
+
+        for i, fc in enumerate(flat_chunks):
+            text = fc["text"]
+            section = fc.get("section")
+            start_page = fc.get("start_page")
+            prov = ProvenanceDTO(
+                source_path=file_path, source_mime=mime,
+                page=start_page,
+                page_label=str(start_page) if start_page is not None else None,
+                section=section, text_snippet=clean_snippet(text), raw=fc,
+            )
+            chunk = ChunkDTO(
+                document_id=doc_id,
+                chunk_id=stable_chunk_id(doc_id, i, start_page),
+                chunk_index=i, text=text, provenance=prov,
+                text_hash=hash_text(text),
+            )
+            out.chunks.append(chunk)
+            _log.debug("  chunk %d: id=%s len=%d section=%s", i, chunk.chunk_id, len(text), section)
+
+    elif ext in _PAGEINDEX_EXTS:
+        _log.info("Using PageIndex API for %s", ext)
         doc_title, flat_chunks, _pages = _run_pageindex(file_path)
         out.title = doc_title
 
@@ -296,14 +375,14 @@ ENGINES = {"pageindex": extract_with_pageindex, "llamaindex": extract_with_llama
 def extract_document(
     file_path: str,
     mime: Optional[str] = None,
-    engine: str = "pageindex",
+    engine: str = "llamaindex",
 ) -> DocumentDTO:
     """Ingest a document using the selected engine.
 
     Args:
         file_path: Path to the input file.
         mime: Optional MIME type override.
-        engine: ``"pageindex"`` (default) or ``"llamaindex"``.
+        engine: ``"llamaindex"`` (default) or ``"pageindex"``.
     """
     fn = ENGINES.get(engine)
     if fn is None:

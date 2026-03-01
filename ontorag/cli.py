@@ -73,15 +73,15 @@ def cmd_ingest(
     out: str = typer.Option("./data/dto", help="Output folder for DTO store"),
     mime: Optional[str] = typer.Option(None, help="Optional MIME type override"),
     force: bool = typer.Option(False, "--force", "-f", help="Re-ingest even if the file was already processed"),
-    engine: str = typer.Option("pageindex", "--engine", "-e", help="Ingestion engine: 'pageindex' (hierarchical) or 'llamaindex' (fixed-size chunks)"),
+    engine: str = typer.Option("llamaindex", "--engine", "-e", help="Ingestion engine: 'llamaindex' (fixed-size chunks, default) or 'pageindex' (hierarchical, requires API key)"),
 ):
     """
     Ingest a file and store DocumentDTO + ChunkDTO (JSON + JSONL).
 
     Two engines are available:
 
-      pageindex   — reasoning-based hierarchical section detection (default)
-      llamaindex  — traditional fixed-size chunking (1024 tokens, 120 overlap)
+      llamaindex  — traditional fixed-size chunking (1024 tokens, 120 overlap) [default]
+      pageindex   — hierarchical section detection via PageIndex API (requires PAGEINDEX_API_KEY)
 
     Documents are content-hashed (SHA-256) before chunking. If the same content
     was already ingested, the command skips processing. Use --force to re-ingest.
