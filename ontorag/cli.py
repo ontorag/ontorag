@@ -349,13 +349,13 @@ def cmd_init_schema_card(
     out: str = typer.Option(..., help="Output path for initial schema_card.json"),
     catalog: str = typer.Option("./data/ontologies", help="Path to ontology catalog directory"),
     namespace: Optional[str] = typer.Option(None, help="Override target namespace"),
-    mcp_url: Optional[str] = typer.Option(None, "--mcp-url", help="MCP server URL for remote baselines (default: ONTORAG_MCP_URL or https://mcp.rpg-schema.org/mcp)"),
+    mcp_url: Optional[str] = typer.Option(None, "--mcp-url", help="REST API base URL for remote baselines (default: ONTORAG_MCP_URL or https://mcp.rpg-schema.org/mcp)"),
 ):
     """
     Create an initial schema card by composing one or more baseline ontologies.
 
     Baselines are resolved first from the local catalog, then from the remote
-    MCP server at ONTORAG_MCP_URL (default: https://mcp.rpg-schema.org/mcp).
+    REST API at ONTORAG_MCP_URL (default: https://mcp.rpg-schema.org).
 
     Each class/property carries an 'origin' field tracking its source.
     """

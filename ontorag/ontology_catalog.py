@@ -247,32 +247,37 @@ def register_ontology(
     return entry
 
 
-def _fetch_baseline_from_mcp(slug: str, mcp_url: str) -> Optional[Dict[str, Any]]:
-    """Fetch a baseline schema card from the remote MCP server."""
-    import asyncio
-    from ontorag.mcp_client import OntologyCatalogMCPClient
+def _rest_base_url(mcp_url: str) -> str:
+    """Derive the REST API base from the MCP/server URL.
 
-    _log.info("Fetching baseline '%s' from MCP: %s", slug, mcp_url)
+    Strips a trailing ``/mcp`` path component so that
+    ``https://mcp.rpg-schema.org/mcp`` → ``https://mcp.rpg-schema.org``.
+    """
+    url = mcp_url.rstrip("/")
+    if url.endswith("/mcp"):
+        url = url[:-4]
+    return url
 
-    async def _fetch() -> Optional[Dict[str, Any]]:
-        client = OntologyCatalogMCPClient(mcp_url)
-        data = await client.inspect_ontology(slug)
-        if "error" in data:
-            _log.warning("MCP: baseline '%s' not found: %s", slug, data["error"])
-            return None
-        return data.get("schema_card")
 
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = None
+def _fetch_baseline_from_rest(slug: str, mcp_url: str) -> Optional[Dict[str, Any]]:
+    """Fetch a baseline schema card via the REST API (GET /ontologies/{slug})."""
+    import requests
 
-    if loop and loop.is_running():
-        import concurrent.futures
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            return pool.submit(lambda: asyncio.run(_fetch())).result(timeout=30)
-    else:
-        return asyncio.run(_fetch())
+    base = _rest_base_url(mcp_url)
+    url = f"{base}/ontologies/{slug}"
+    _log.info("Fetching baseline '%s' from REST: %s", slug, url)
+
+    resp = requests.get(url, timeout=30)
+    if resp.status_code == 404:
+        _log.warning("REST: baseline '%s' not found (404)", slug)
+        return None
+    resp.raise_for_status()
+
+    data = resp.json()
+    if "error" in data:
+        _log.warning("REST: baseline '%s' error: %s", slug, data["error"])
+        return None
+    return data.get("schema_card")
 
 
 def _merge_card_into(
@@ -313,7 +318,7 @@ def compose_baselines(
     Resolution order for each slug:
 
     1. Local catalog (``catalog_dir``)
-    2. Remote MCP server (``mcp_url``, defaults to ``ONTORAG_MCP_URL``
+    2. Remote REST API (``mcp_url``, defaults to ``ONTORAG_MCP_URL``
        env var or ``https://mcp.rpg-schema.org/mcp``)
 
     Classes/properties from each baseline carry their respective ``origin``.
@@ -346,18 +351,18 @@ def compose_baselines(
             card = ttl_to_schema_card(ttl_file, slug, namespace=entry.get("namespace"))
             _log.info("Resolved '%s' from local catalog", slug)
 
-        # 2) Fall back to remote MCP
+        # 2) Fall back to remote REST API
         if card is None and mcp_url:
             try:
-                card = _fetch_baseline_from_mcp(slug, mcp_url)
+                card = _fetch_baseline_from_rest(slug, mcp_url)
                 if card:
-                    _log.info("Resolved '%s' from MCP server", slug)
+                    _log.info("Resolved '%s' from REST API", slug)
             except Exception as exc:
-                _log.warning("MCP fetch failed for '%s': %s", slug, exc)
+                _log.warning("REST fetch failed for '%s': %s", slug, exc)
 
         if card is None:
             merged["warnings"].append(
-                f"Baseline '{slug}' not found in local catalog or MCP server."
+                f"Baseline '{slug}' not found in local catalog or REST API."
             )
             continue
 
