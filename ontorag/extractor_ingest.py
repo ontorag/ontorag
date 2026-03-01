@@ -2,14 +2,14 @@
 """
 Document ingestion with two selectable engines:
 
-  - **pageindex** (default) — reasoning-based hierarchical section
-    detection via PageIndex.  Produces a tree of natural document
-    sections (PDF/Markdown), flattened into ChunkDTOs with section
-    path provenance.  Falls back to text extraction for other formats.
+  - **llamaindex** (default) — traditional fixed-size chunking via
+    LlamaIndex SimpleDirectoryReader + SentenceSplitter.  Broad format
+    support out of the box.
 
-  - **llamaindex** — traditional fixed-size chunking via LlamaIndex
-    SimpleDirectoryReader + SentenceSplitter.  Broad format support
-    out of the box.
+  - **pageindex** — reasoning-based hierarchical section detection via
+    the PageIndex hosted API.  Produces a tree of natural document
+    sections (PDF), flattened into ChunkDTOs with section path
+    provenance.  Requires a PAGEINDEX_API_KEY.
 
 Both engines produce the same DocumentDTO / ChunkDTO output.
 """
@@ -375,14 +375,14 @@ ENGINES = {"pageindex": extract_with_pageindex, "llamaindex": extract_with_llama
 def extract_document(
     file_path: str,
     mime: Optional[str] = None,
-    engine: str = "pageindex",
+    engine: str = "llamaindex",
 ) -> DocumentDTO:
     """Ingest a document using the selected engine.
 
     Args:
         file_path: Path to the input file.
         mime: Optional MIME type override.
-        engine: ``"pageindex"`` (default) or ``"llamaindex"``.
+        engine: ``"llamaindex"`` (default) or ``"pageindex"``.
     """
     fn = ENGINES.get(engine)
     if fn is None:
