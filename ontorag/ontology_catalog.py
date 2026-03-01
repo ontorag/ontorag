@@ -247,18 +247,84 @@ def register_ontology(
     return entry
 
 
+def _fetch_baseline_from_mcp(slug: str, mcp_url: str) -> Optional[Dict[str, Any]]:
+    """Fetch a baseline schema card from the remote MCP server."""
+    import asyncio
+    from ontorag.mcp_client import OntologyCatalogMCPClient
+
+    _log.info("Fetching baseline '%s' from MCP: %s", slug, mcp_url)
+
+    async def _fetch() -> Optional[Dict[str, Any]]:
+        client = OntologyCatalogMCPClient(mcp_url)
+        data = await client.inspect_ontology(slug)
+        if "error" in data:
+            _log.warning("MCP: baseline '%s' not found: %s", slug, data["error"])
+            return None
+        return data.get("schema_card")
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop and loop.is_running():
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(lambda: asyncio.run(_fetch())).result(timeout=30)
+    else:
+        return asyncio.run(_fetch())
+
+
+def _merge_card_into(
+    card: Dict[str, Any],
+    seen_classes: Dict[str, Dict[str, Any]],
+    seen_dprops: Dict[tuple, Dict[str, Any]],
+    seen_oprops: Dict[tuple, Dict[str, Any]],
+) -> None:
+    """Merge a schema card's contents into the seen-sets."""
+    for c in card.get("classes", []):
+        k = c["name"].lower()
+        if k not in seen_classes:
+            seen_classes[k] = c
+
+    for p in card.get("datatype_properties", []):
+        k = (p["domain"].lower(), p["name"].lower(), p["range"].lower())
+        if k not in seen_dprops:
+            seen_dprops[k] = p
+
+    for p in card.get("object_properties", []):
+        k = (p["domain"].lower(), p["name"].lower(), p["range"].lower())
+        if k not in seen_oprops:
+            seen_oprops[k] = p
+
+
+_DEFAULT_MCP_URL = "https://mcp.rpg-schema.org/mcp"
+
+
 def compose_baselines(
     catalog_dir: str,
     slugs: List[str],
     target_namespace: Optional[str] = None,
+    mcp_url: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Merge multiple baseline ontologies into a single schema card.
+
+    Resolution order for each slug:
+
+    1. Local catalog (``catalog_dir``)
+    2. Remote MCP server (``mcp_url``, defaults to ``ONTORAG_MCP_URL``
+       env var or ``https://mcp.rpg-schema.org/mcp``)
+
     Classes/properties from each baseline carry their respective ``origin``.
     """
+    import os
     from ontorag.schema_card import _ensure_schema_card_defaults
 
-    _log.info("Composing baselines: %s", slugs)
+    if mcp_url is None:
+        mcp_url = os.getenv("ONTORAG_MCP_URL", _DEFAULT_MCP_URL)
+
+    _log.info("Composing baselines: %s (mcp=%s)", slugs, mcp_url)
     merged = _ensure_schema_card_defaults({})
     if target_namespace:
         merged["namespace"] = target_namespace
@@ -271,28 +337,31 @@ def compose_baselines(
     seen_oprops: Dict[tuple, Dict[str, Any]] = {}
 
     for slug in slugs:
+        card: Optional[Dict[str, Any]] = None
+
+        # 1) Try local catalog
         entry = slug_to_entry.get(slug)
-        if entry is None:
-            merged["warnings"].append(f"Baseline '{slug}' not found in catalog.")
+        if entry is not None:
+            ttl_file = str(Path(catalog_dir) / entry["path"])
+            card = ttl_to_schema_card(ttl_file, slug, namespace=entry.get("namespace"))
+            _log.info("Resolved '%s' from local catalog", slug)
+
+        # 2) Fall back to remote MCP
+        if card is None and mcp_url:
+            try:
+                card = _fetch_baseline_from_mcp(slug, mcp_url)
+                if card:
+                    _log.info("Resolved '%s' from MCP server", slug)
+            except Exception as exc:
+                _log.warning("MCP fetch failed for '%s': %s", slug, exc)
+
+        if card is None:
+            merged["warnings"].append(
+                f"Baseline '{slug}' not found in local catalog or MCP server."
+            )
             continue
 
-        ttl_file = str(Path(catalog_dir) / entry["path"])
-        card = ttl_to_schema_card(ttl_file, slug, namespace=entry.get("namespace"))
-
-        for c in card.get("classes", []):
-            k = c["name"].lower()
-            if k not in seen_classes:
-                seen_classes[k] = c
-
-        for p in card.get("datatype_properties", []):
-            k = (p["domain"].lower(), p["name"].lower(), p["range"].lower())
-            if k not in seen_dprops:
-                seen_dprops[k] = p
-
-        for p in card.get("object_properties", []):
-            k = (p["domain"].lower(), p["name"].lower(), p["range"].lower())
-            if k not in seen_oprops:
-                seen_oprops[k] = p
+        _merge_card_into(card, seen_classes, seen_dprops, seen_oprops)
 
     _log.info(
         "Composition result: classes=%d dt_props=%d obj_props=%d",
