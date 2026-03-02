@@ -161,6 +161,81 @@ def cmd_extract_schema(
     )
 
 
+@app.command("align-schema")
+def cmd_align_schema(
+    proposal: str = typer.Option(..., help="Path to aggregated schema proposal JSON (output of extract-schema)"),
+    baseline: str = typer.Option(..., help="Path to baseline schema_card.json (output of init-schema-card)"),
+    out: str = typer.Option(..., help="Output path for alignment JSON"),
+):
+    """
+    Align induced schema proposals against baseline ontologies.
+
+    Compares the classes and properties from extract-schema against the
+    baseline schema card and produces an alignment mapping.  Each induced
+    item gets an action (reuse / extend / new), a link to the matching
+    baseline item and its source ontology, plus a confidence score.
+
+    Only meaningful when baselines were used in init-schema-card.
+    """
+    from ontorag.schema_alignment import align_schema
+
+    prop = read_json(proposal)
+    base = read_json(baseline)
+
+    n_induced = (
+        len(prop.get("classes", []))
+        + len(prop.get("datatype_properties", []))
+        + len(prop.get("object_properties", []))
+    )
+    n_baseline = (
+        len(base.get("classes", []))
+        + len(base.get("datatype_properties", []))
+        + len(base.get("object_properties", []))
+    )
+
+    if n_baseline == 0:
+        typer.echo("align-schema: baseline has no classes or properties — skipping alignment")
+        write_json(out, {"classes": [], "datatype_properties": [], "object_properties": [], "warnings": ["No baselines to align against."]})
+        return
+
+    typer.echo(
+        f"align-schema: {n_induced} induced items vs {n_baseline} baseline items"
+    )
+
+    def _on_category(cat_key: str, cat_result: dict) -> None:
+        items = cat_result.get("alignments", [])
+        reuse = sum(1 for a in items if a.get("action") == "reuse")
+        extend = sum(1 for a in items if a.get("action") == "extend")
+        new = sum(1 for a in items if a.get("action") == "new")
+        typer.echo(
+            f"  {cat_key}: {len(items)} aligned  "
+            f"(reuse={reuse}  extend={extend}  new={new})"
+        )
+
+    alignment = align_schema(prop, base, on_category_done=_on_category)
+
+    write_json(out, alignment)
+
+    total_reuse = sum(
+        1 for cat in ("classes", "datatype_properties", "object_properties")
+        for a in alignment.get(cat, []) if a.get("action") == "reuse"
+    )
+    total_extend = sum(
+        1 for cat in ("classes", "datatype_properties", "object_properties")
+        for a in alignment.get(cat, []) if a.get("action") == "extend"
+    )
+    total_new = sum(
+        1 for cat in ("classes", "datatype_properties", "object_properties")
+        for a in alignment.get(cat, []) if a.get("action") == "new"
+    )
+    n_warn = len(alignment.get("warnings", []))
+
+    typer.echo(
+        f"OK align-schema: reuse={total_reuse} extend={total_extend} "
+        f"new={total_new} warnings={n_warn}  out={out}"
+    )
+
+
 @app.command("build-schema-card")
 def cmd_build_schema_card(
     previous: str = typer.Option(..., help="Path to previous schema_card.json"),
