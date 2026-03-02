@@ -55,10 +55,12 @@ def _chat_json(system: str, user: str) -> Dict[str, Any]:
     }
 
     _log.debug("API request: model=%s prompt_len=%d", OPENROUTER_MODEL, len(user))
+    _log.debug("API prompt:\n%s", user)
     r = requests.post(url, headers=headers, json=payload, timeout=120)
     r.raise_for_status()
     content = r.json()["choices"][0]["message"]["content"]
     _log.debug("API response: %d chars", len(content))
+    _log.debug("API raw response:\n%s", content)
 
     content = content.strip()
     if content.startswith("```"):

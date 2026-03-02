@@ -211,6 +211,17 @@ def cmd_align_schema(
             f"  {cat_key}: {len(items)} aligned  "
             f"(reuse={reuse}  extend={extend}  new={new})"
         )
+        for a in items:
+            action = a.get("action", "?")
+            conf = a.get("confidence", "?")
+            iname = a.get("induced_name", "?")
+            bname = a.get("baseline_name", "")
+            borig = a.get("baseline_origin", "")
+            rationale = a.get("rationale", "")
+            if action == "new":
+                typer.echo(f"    {iname} -> new  ({conf})  {rationale}")
+            else:
+                typer.echo(f"    {iname} -> {action} {bname} [{borig}]  ({conf})  {rationale}")
 
     alignment = align_schema(prop, base, on_category_done=_on_category)
 
