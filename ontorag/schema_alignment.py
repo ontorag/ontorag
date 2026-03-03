@@ -28,8 +28,8 @@ OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/ap
 APP_NAME = os.getenv("OPENROUTER_APP_NAME", "OntoRAG")
 SITE_URL = os.getenv("OPENROUTER_SITE_URL", "https://ontorag.github.io")
 
-AlignProgressCallback = Callable[[str, Dict[str, Any]], None]
-"""(category, category_result) → None"""
+AlignProgressCallback = Callable[..., None]
+"""(category, category_result, *, resumed=False) → None"""
 
 
 # ── LLM helper ────────────────────────────────────────────────────────
@@ -277,10 +277,16 @@ def _align_properties(
 
 # ── Public entry point ────────────────────────────────────────────────
 
+FlushCallback = Callable[[Dict[str, Any]], None]
+"""Called after each category with the full partial result so it can be flushed to disk."""
+
+
 def align_schema(
     proposal: Dict[str, Any],
     baseline: Dict[str, Any],
     on_category_done: Optional[AlignProgressCallback] = None,
+    on_flush: Optional[FlushCallback] = None,
+    prior: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Align an induced schema proposal against a baseline schema card.
@@ -288,6 +294,9 @@ def align_schema(
     Returns an alignment dict with three categories (classes,
     datatype_properties, object_properties), each containing a list
     of alignment entries with action/confidence/rationale.
+
+    If *prior* is provided (e.g. from a partial earlier run), categories
+    that already have alignments are skipped — no wasted LLM calls.
     """
     _log.info(
         "Aligning proposal (C=%d D=%d O=%d) against baseline (C=%d D=%d O=%d)",
@@ -305,13 +314,28 @@ def align_schema(
         ("object_properties", "object_properties", "OBJECT PROPERTIES"),
     ]
 
-    result: Dict[str, Any] = {"classes": [], "datatype_properties": [], "object_properties": [], "warnings": []}
+    result: Dict[str, Any] = {
+        "classes": [],
+        "datatype_properties": [],
+        "object_properties": [],
+        "warnings": [],
+        "_partial": True,
+    }
 
     for cat_key, prop_key, prop_label in categories:
+        # ── Resume: skip categories already completed in a prior run ──
+        if prior and len(prior.get(cat_key, [])) > 0:
+            _log.info("  %s: reusing %d alignments from prior run", cat_key, len(prior[cat_key]))
+            result[cat_key] = prior[cat_key]
+            cat_result: Dict[str, Any] = {"alignments": prior[cat_key]}
+            if on_category_done:
+                on_category_done(cat_key, cat_result, resumed=True)
+            continue
+
         induced_count = len(proposal.get(cat_key, []))
         if induced_count == 0:
             _log.info("  %s: nothing to align (0 induced)", cat_key)
-            cat_result: Dict[str, Any] = {"alignments": []}
+            cat_result = {"alignments": []}
         else:
             _log.info("  %s: aligning %d induced items", cat_key, induced_count)
             for attempt in range(3):
@@ -335,9 +359,17 @@ def align_schema(
         if on_category_done:
             on_category_done(cat_key, cat_result)
 
+        # Flush partial result so work-so-far is saved to disk
+        if on_flush:
+            on_flush(result)
+
         # Rate-limit pause between LLM calls
         if cat_key != "object_properties" and induced_count > 0:
             time.sleep(2)
+
+    # Remove partial marker only when every category succeeded
+    if not result["warnings"]:
+        result.pop("_partial", None)
 
     # Compute summary counts
     for cat_key in ("classes", "datatype_properties", "object_properties"):

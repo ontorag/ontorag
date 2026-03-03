@@ -202,14 +202,27 @@ def cmd_align_schema(
         f"align-schema: {n_induced} induced items vs {n_baseline} baseline items"
     )
 
-    def _on_category(cat_key: str, cat_result: dict) -> None:
+    # ── Resume: load prior partial results if they exist ──
+    prior = None
+    if os.path.exists(out):
+        try:
+            prior_data = read_json(out)
+            if prior_data.get("_partial"):
+                has = [k for k in ("classes", "datatype_properties", "object_properties") if prior_data.get(k)]
+                typer.echo(f"align-schema: resuming from partial {out}  (have {', '.join(has) or 'nothing'})")
+                prior = prior_data
+        except Exception:
+            pass  # ignore corrupt file, start fresh
+
+    def _on_category(cat_key: str, cat_result: dict, *, resumed: bool = False) -> None:
+        tag = " (resumed)" if resumed else ""
         items = cat_result.get("alignments", [])
         reuse = sum(1 for a in items if a.get("action") == "reuse")
         extend = sum(1 for a in items if a.get("action") == "extend")
         new = sum(1 for a in items if a.get("action") == "new")
         typer.echo(
             f"  {cat_key}: {len(items)} aligned  "
-            f"(reuse={reuse}  extend={extend}  new={new})"
+            f"(reuse={reuse}  extend={extend}  new={new}){tag}"
         )
         for a in items:
             action = a.get("action", "?")
@@ -223,7 +236,10 @@ def cmd_align_schema(
             else:
                 typer.echo(f"    {iname} -> {action} {bname} [{borig}]  ({conf})  {rationale}")
 
-    alignment = align_schema(prop, base, on_category_done=_on_category)
+    def _on_flush(partial: dict) -> None:
+        write_json(out, partial)
+
+    alignment = align_schema(prop, base, on_category_done=_on_category, on_flush=_on_flush, prior=prior)
 
     write_json(out, alignment)
 
