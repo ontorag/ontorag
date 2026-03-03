@@ -284,17 +284,24 @@ def cmd_build_schema_card(
 
 @app.command("export-schema-ttl")
 def cmd_export_schema_ttl(
-    proposal: str = typer.Option(..., help="Path to aggregated schema proposal JSON"),
+    proposal: str = typer.Option(..., help="Path to aggregated schema proposal JSON or alignment JSON"),
     out: str = typer.Option(..., help="Output path for TTL"),
     namespace: str = typer.Option("http://www.example.com/biz/", help="Base namespace for generated terms"),
+    original_proposal: Optional[str] = typer.Option(None, "--original-proposal",
+        help="Path to the original proposal JSON (for descriptions when exporting from alignment)"),
 ):
     """
-    Export a schema proposal JSON into a staging OWL/RDFS Turtle file.
+    Export a schema proposal or alignment JSON into a staging OWL/RDFS Turtle file.
+
+    Accepts both raw proposals (output of extract-schema) and alignment results
+    (output of align-schema).  When exporting alignment data, pass
+    --original-proposal to preserve descriptions and range types.
     """
     prop = read_json(proposal)
+    orig = read_json(original_proposal) if original_proposal else None
 
     _log.info("Exporting schema TTL: namespace=%s", namespace)
-    g = proposal_to_ttl(prop, biz_ns=namespace)
+    g = proposal_to_ttl(prop, biz_ns=namespace, original_proposal=orig)
 
     Path(out).parent.mkdir(parents=True, exist_ok=True)
     g.serialize(destination=out, format="turtle")
