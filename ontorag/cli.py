@@ -266,15 +266,25 @@ def cmd_align_schema(
 @app.command("build-schema-card")
 def cmd_build_schema_card(
     previous: str = typer.Option(..., help="Path to previous schema_card.json"),
-    proposal: str = typer.Option(..., help="Path to aggregated schema proposal JSON"),
+    proposal: str = typer.Option(..., help="Path to aggregated schema proposal or alignment JSON"),
     out: str = typer.Option(..., help="Output path for next schema_card.json"),
     namespace: Optional[str] = typer.Option(None, help="Override namespace in output schema card"),
+    original_proposal: Optional[str] = typer.Option(None, "--original-proposal",
+        help="Path to the original proposal JSON (for descriptions when building from alignment)"),
 ):
     """
     Deterministically merge previous schema card with an aggregated proposal → new schema card.
+
+    Accepts both raw proposals (output of extract-schema) and alignment
+    results (output of align-schema).  When building from alignment data,
+    pass --original-proposal to preserve descriptions and range types.
     """
+    from ontorag.alignment_normalizer import normalize_alignment
+
     prev = read_json(previous)
     prop = read_json(proposal)
+    orig = read_json(original_proposal) if original_proposal else None
+    prop = normalize_alignment(prop, original_proposal=orig)
 
     _log.info("Building schema card: previous=%s proposal=%s", previous, proposal)
     new_card = schema_card_from_proposal(prev, prop, namespace=namespace)
