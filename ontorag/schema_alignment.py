@@ -133,11 +133,14 @@ BASELINE CLASSES (from registered ontologies):
 {baseline}
 
 For each INDUCED class, decide:
-- "reuse": the induced class IS semantically the same as a baseline class.
-  The induced name should be replaced by the baseline name.
-- "extend": the induced class is a specialization (subClassOf) of a baseline class.
-  Keep the induced name but record the parent.
-- "new": no meaningful match in the baselines.
+- "reuse": the induced class IS semantically identical to a baseline class —
+  same extension AND intension, no meaningful domain-specific distinction.
+  The induced name will be replaced by the baseline name.
+- "extend": the induced class is a specialization (subClassOf) of a baseline
+  class. It shares the parent concept but adds domain-specific constraints,
+  roles, or attributes. Keep the induced name and record the parent.
+- "new": no meaningful match in the baselines, or the match is too loose
+  to justify replacing the induced name.
 
 Return STRICT JSON:
 {{
@@ -155,9 +158,10 @@ Return STRICT JSON:
 
 Rules:
 - Every induced class must appear exactly once.
-- Only match when there is genuine semantic overlap.
-- Prefer "reuse" over "extend" when the concepts are truly equivalent.
-- If uncertain, use "new" with low confidence.
+- Preserve domain granularity: prefer "extend" or "new" over "reuse" whenever
+  the induced class has any meaningful distinction from the baseline class.
+- Use "reuse" only when the concepts are truly equivalent and interchangeable.
+  When in doubt, use "extend" (if a parent exists) or "new".
 - Output JSON only. No extra text.
 """
 
@@ -171,11 +175,11 @@ BASELINE {prop_label} (from registered ontologies):
 {baseline}
 
 For each INDUCED property, decide:
-- "reuse": the induced property IS semantically the same as a baseline property.
-  The induced name should be replaced by the baseline name.
-- "extend": the induced property is a specialization (subPropertyOf) of a baseline property.
-  Keep the induced name but record the parent.
-- "new": no meaningful match in the baselines.
+- "reuse": the induced property IS semantically identical to a baseline property —
+  same meaning, compatible domain/range. The induced name will be replaced.
+- "extend": the induced property is a specialization (subPropertyOf) of a baseline
+  property. It narrows the domain, range, or meaning. Keep the induced name.
+- "new": no meaningful match in the baselines, or the match is too loose.
 
 Return STRICT JSON:
 {{
@@ -196,9 +200,11 @@ Return STRICT JSON:
 
 Rules:
 - Every induced property must appear exactly once.
-- Only match when there is genuine semantic overlap in both meaning and domain/range fit.
-- Prefer "reuse" over "extend" when the concepts are truly equivalent.
-- If uncertain, use "new" with low confidence.
+- Match only when there is genuine semantic overlap in meaning AND domain/range fit.
+- Preserve domain granularity: prefer "extend" or "new" over "reuse" whenever
+  the induced property has any meaningful distinction from the baseline.
+- Use "reuse" only when the properties are truly interchangeable.
+  When in doubt, use "extend" (if a parent exists) or "new".
 - Output JSON only. No extra text.
 """
 

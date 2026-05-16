@@ -113,7 +113,11 @@ OUTPUT (STRICT JSON):
 }}
 
 Rules:
-- Do not invent entities. Only extract what is clearly present.
+- Do not invent entities. Only extract what is clearly present in the chunk.
+- Use the MOST SPECIFIC class available in the schema card.
+  Do not assign a broad parent class when a more precise subclass applies.
+- If an entity could belong to multiple classes (e.g. both a generic and a
+  specific one), use the most specific class only.
 - Keep quotes short and verbatim from the chunk.
 - Prefer generic IDs if present (e.g., '#123', 'BG-01'); otherwise leave id_hint empty.
 - Use schema names exactly as in schema card (case-sensitive).

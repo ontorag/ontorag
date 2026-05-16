@@ -46,10 +46,18 @@ Return STRICT JSON with this structure:
 }}
 
 Rules:
-- Do not invent facts.
-- Prefer generic names over examples.
-- Reuse existing schema items when possible.
-- Evidence quotes must be short (<= 25 words) and copied from the chunk.
+- Do not invent facts not grounded in the chunk.
+- Use precise, domain-specific class names that capture the concept accurately.
+  Do NOT use overly broad names that collapse distinct concepts into one class.
+- Propose a new class whenever a concept has meaningfully different attributes,
+  roles, or domain significance from existing classes — even if they share a
+  parent concept. Err on the side of more classes, not fewer.
+- Only add an item to "reuse_instead_of_create" when the existing schema item
+  is truly identical (same extension AND intension). A specialization or
+  domain-specific variant should be a new class, not a reuse.
+- Merge suggestions in "alias_or_merge_suggestions" should be rare and only
+  for genuine synonyms (same meaning, different label).
+- Evidence quotes must be short (<= 25 words) and copied verbatim from the chunk.
 - Output JSON only. No extra text.
 """.strip()
 

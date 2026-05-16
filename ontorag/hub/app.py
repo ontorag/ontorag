@@ -12,9 +12,12 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+_SLUG_RE = re.compile(r'^[a-zA-Z0-9_\-]{1,64}$')
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -65,16 +68,30 @@ app = FastAPI(
     ),
 )
 
+_cors_origins_raw = os.getenv("HUB_CORS_ORIGINS", "*")
+_cors_origins = [o.strip() for o in _cors_origins_raw.split(",") if o.strip()]
+_cors_wildcard = _cors_origins == ["*"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=_cors_origins,
+    # credentials (cookies/Authorization) require explicit origins — forbidden with "*"
+    allow_credentials=not _cors_wildcard,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # Central ontology store — in-memory for now, backed by disk.
 _ONTOLOGY_DIR = Path(os.getenv("HUB_ONTOLOGY_DIR", "./data/hub_ontologies"))
+
+
+def _validate_slug(slug: str) -> str:
+    if not _SLUG_RE.match(slug):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid slug {slug!r}. Use only letters, digits, hyphens, underscores (max 64 chars).",
+        )
+    return slug
 
 
 # =====================================================================
@@ -229,7 +246,7 @@ async def api_extract_schema(
     # Load schema card: from central store if slug provided, else empty
     card: Dict[str, Any] = {"classes": [], "datatype_properties": [], "object_properties": []}
     if body.schema_card_slug:
-        card_path = _ONTOLOGY_DIR / body.schema_card_slug / "schema_card.json"
+        card_path = _ONTOLOGY_DIR / _validate_slug(body.schema_card_slug) / "schema_card.json"
         if card_path.exists():
             card = json.loads(card_path.read_text(encoding="utf-8"))
 
@@ -279,7 +296,7 @@ async def api_extract_instances(
     chunks_list = [json.loads(line) for line in chunks_raw.strip().splitlines() if line.strip()]
     chunks_by_id = {c.get("chunk_id"): c for c in chunks_list if c.get("chunk_id")}
 
-    card_path = _ONTOLOGY_DIR / body.schema_card_slug / "schema_card.json"
+    card_path = _ONTOLOGY_DIR / _validate_slug(body.schema_card_slug) / "schema_card.json"
     if not card_path.exists():
         raise HTTPException(status_code=404, detail=f"Ontology not found: {body.schema_card_slug}")
     card = json.loads(card_path.read_text(encoding="utf-8"))
@@ -334,7 +351,7 @@ async def api_publish_ontology(
     The schema card is stored on the Hub server.  It can be referenced
     by any user for extraction, and powers dynamic onto-mcp endpoints.
     """
-    slug_dir = _ONTOLOGY_DIR / body.slug
+    slug_dir = _ONTOLOGY_DIR / _validate_slug(body.slug)
     slug_dir.mkdir(parents=True, exist_ok=True)
 
     card = body.schema_card
@@ -366,7 +383,7 @@ async def api_publish_ontology(
 @app.get("/api/ontologies/{slug}", response_model=Dict[str, Any])
 async def api_get_ontology(slug: str):
     """Return the full schema card for a registered ontology."""
-    card_path = _ONTOLOGY_DIR / slug / "schema_card.json"
+    card_path = _ONTOLOGY_DIR / _validate_slug(slug) / "schema_card.json"
     if not card_path.exists():
         raise HTTPException(status_code=404, detail=f"Ontology not found: {slug}")
     return json.loads(card_path.read_text(encoding="utf-8"))
@@ -385,7 +402,7 @@ async def api_mcp_endpoint(slug: str):
     structure (classes, properties) to expose SPARQL-template tools.
     No user data is required.
     """
-    card_path = _ONTOLOGY_DIR / slug / "schema_card.json"
+    card_path = _ONTOLOGY_DIR / _validate_slug(slug) / "schema_card.json"
     if not card_path.exists():
         raise HTTPException(status_code=404, detail=f"Ontology not found: {slug}")
 
