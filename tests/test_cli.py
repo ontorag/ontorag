@@ -57,12 +57,21 @@ def test_doctor():
         assert eng in r.stdout, f"doctor did not list engine {eng}"
 
 
-def test_llm_flags_in_help():
-    """OpenRouter settings are exposed as global flags before the subcommand."""
-    r = ontorag("--help")
-    assert r.returncode == 0
-    for flag in ("--model", "--api-key", "--base-url"):
-        assert flag in r.stdout, f"global LLM flag {flag} missing from --help"
+def test_global_flags_accepted():
+    """The global LLM/execution flags are registered options (tested functionally,
+    not by parsing Rich's --help, which renders unreliably when captured)."""
+    r = ontorag("--model", "m/x", "--api-key", "k", "--base-url", "http://h/v1",
+                "--concurrency", "2", "--slim-card", "doctor")
+    assert r.returncode == 0, (r.stdout + r.stderr)
+    assert "No such option" not in (r.stdout + r.stderr)
+    assert "model=m/x" in r.stdout          # --model actually took effect
+
+
+def test_unknown_global_flag_rejected():
+    """Negative control: an unregistered flag is rejected (proves the check works)."""
+    r = ontorag("--totally-unknown-flag", "doctor")
+    assert r.returncode != 0
+    assert "No such option" in (r.stdout + r.stderr)
 
 
 def test_model_override_reflected_in_doctor():
