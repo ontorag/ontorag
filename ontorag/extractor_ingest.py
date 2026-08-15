@@ -313,8 +313,16 @@ def extract_with_pageindex(file_path: str, mime: Optional[str] = None) -> Docume
 
 def extract_with_llamaindex(file_path: str, mime: Optional[str] = None) -> DocumentDTO:
     """Ingest using LlamaIndex SimpleDirectoryReader + SentenceSplitter."""
-    from llama_index.core import SimpleDirectoryReader
-    from llama_index.core.node_parser import SentenceSplitter
+    try:
+        from llama_index.core import SimpleDirectoryReader
+        from llama_index.core.node_parser import SentenceSplitter
+    except ImportError as e:
+        raise RuntimeError(
+            "The 'llamaindex' ingestion engine needs an optional dependency:\n"
+            "    pip install 'ontorag[llamaindex]'\n"
+            "Or ingest md / text / html / epub with no extra dependencies and no API key:\n"
+            "    ontorag ingest <file> --engine pageindex"
+        ) from e
 
     content_hash = hash_file(file_path)
     doc_id = stable_document_id(file_path)
