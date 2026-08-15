@@ -394,11 +394,86 @@ def extract_builtin(file_path: str, mime: Optional[str] = None) -> DocumentDTO:
     return extract_with_pageindex(file_path, mime=mime, pdf_via_api=False)
 
 
+def _dto_from_text(file_path: str, mime: Optional[str], engine_label: str,
+                   full_text: str, detected_mime: Optional[str] = None,
+                   title: Optional[str] = None) -> DocumentDTO:
+    """Build a DocumentDTO from already-extracted text (recursive char chunking)."""
+    doc_id = stable_document_id(file_path)
+    out = DocumentDTO(
+        document_id=doc_id, source_path=file_path,
+        source_mime=mime or detected_mime, content_hash=hash_file(file_path),
+        title=title, chunks=[],
+    )
+    for i, text in enumerate(_chunk_text(full_text)):
+        if not text.strip():
+            continue
+        prov = ProvenanceDTO(source_path=file_path, source_mime=mime or detected_mime,
+                             text_snippet=clean_snippet(text))
+        out.chunks.append(ChunkDTO(
+            document_id=doc_id, chunk_id=stable_chunk_id(doc_id, i, None),
+            chunk_index=i, text=text, provenance=prov, text_hash=hash_text(text),
+        ))
+    _log.info("Ingested %s [engine=%s] -> %d chunks", file_path, engine_label, len(out.chunks))
+    return out
+
+
+def extract_with_docling(file_path: str, mime: Optional[str] = None) -> DocumentDTO:
+    """Docling (IBM / Linux Foundation): layout-aware PDF/DOCX/PPTX → Markdown,
+    self-hosted, high fidelity. Heavier (models) but no API key."""
+    try:
+        from docling.document_converter import DocumentConverter
+    except ImportError as e:
+        raise RuntimeError(
+            "The 'docling' engine needs an optional dependency:\n"
+            "    pip install 'ontorag[docling]'"
+        ) from e
+    result = DocumentConverter().convert(file_path)
+    md = result.document.export_to_markdown()
+    return _dto_from_text(file_path, mime, "docling", md, detected_mime="text/markdown")
+
+
+def extract_with_unstructured(file_path: str, mime: Optional[str] = None) -> DocumentDTO:
+    """Unstructured: broad-format partitioning into typed elements (title/table/…),
+    self-hosted. No API key for local partitioning."""
+    try:
+        from unstructured.partition.auto import partition
+    except ImportError as e:
+        raise RuntimeError(
+            "The 'unstructured' engine needs an optional dependency:\n"
+            "    pip install 'ontorag[unstructured]'"
+        ) from e
+    elements = partition(filename=file_path)
+    text = "\n\n".join(str(el) for el in elements)
+    return _dto_from_text(file_path, mime, "unstructured", text)
+
+
 ENGINES = {
     "builtin": extract_builtin,
     "pageindex": extract_with_pageindex,
     "llamaindex": extract_with_llamaindex,
+    "docling": extract_with_docling,
+    "unstructured": extract_with_unstructured,
 }
+
+# engine -> (import-probe module, install hint) for `ontorag doctor`.  None = always available.
+ENGINE_REQUIREMENTS = {
+    "builtin": (None, None),
+    "pageindex": ("pageindex", "ontorag[pageindex] (+ PAGEINDEX_API_KEY for hosted PDF)"),
+    "llamaindex": ("llama_index", "ontorag[llamaindex]"),
+    "docling": ("docling", "ontorag[docling]"),
+    "unstructured": ("unstructured", "ontorag[unstructured]"),
+}
+
+
+def engine_status() -> List[tuple]:
+    """(name, available, install_hint) for each registered ingestion engine."""
+    import importlib.util as _u
+    rows = []
+    for name in ENGINES:
+        mod, hint = ENGINE_REQUIREMENTS.get(name, (None, None))
+        ok = mod is None or _u.find_spec(mod) is not None
+        rows.append((name, ok, hint or "no extra needed"))
+    return rows
 
 
 def extract_document(
@@ -411,8 +486,8 @@ def extract_document(
     Args:
         file_path: Path to the input file.
         mime: Optional MIME type override.
-        engine: ``"builtin"`` (default, no deps/keys) | ``"pageindex"`` (hosted
-            hierarchical PDF) | ``"llamaindex"`` (LlamaIndex chunking).
+        engine: one of ``ENGINES`` — ``builtin`` (default, no deps/keys),
+            ``pageindex``, ``llamaindex``, ``docling``, ``unstructured``.
     """
     fn = ENGINES.get(engine)
     if fn is None:

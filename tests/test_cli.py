@@ -49,7 +49,29 @@ def test_doctor():
     r = ontorag("doctor")
     assert r.returncode == 0
     assert "OntoRAG environment" in r.stdout
-    assert "builtin" in r.stdout
+    for eng in ("builtin", "pageindex", "llamaindex", "docling", "unstructured"):
+        assert eng in r.stdout, f"doctor did not list engine {eng}"
+
+
+def test_unknown_engine_rejected(tmp_path):
+    doc = tmp_path / "s.md"
+    doc.write_text("# T\n\nhi\n", encoding="utf-8")
+    r = ontorag("ingest", str(doc), "--engine", "nope", "--out", str(tmp_path / "d"))
+    assert r.returncode != 0
+    assert "unknown engine" in (r.stdout + r.stderr).lower()
+
+
+def test_docling_engine_missing_is_friendly(tmp_path):
+    try:
+        import docling  # noqa: F401
+        pytest.skip("docling installed")
+    except ImportError:
+        pass
+    doc = tmp_path / "s.md"
+    doc.write_text("# T\n\nhi\n", encoding="utf-8")
+    r = ontorag("ingest", str(doc), "--engine", "docling", "--out", str(tmp_path / "d"))
+    assert r.returncode != 0
+    assert "ontorag[docling]" in (r.stdout + r.stderr)
 
 
 def test_llamaindex_engine_missing_is_friendly(tmp_path):

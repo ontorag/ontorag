@@ -1,6 +1,6 @@
 [project]
 name = "ontorag"
-version = "0.1.1"
+version = "0.1.2"
 description = "Ontology-first RAG: extract a governed knowledge graph from documents and serve it over SPARQL and MCP."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -40,6 +40,8 @@ dependencies = [
 pdf = ["pymupdf>=1.24.0"]
 pageindex = ["pageindex>=0.2.5"]
 llamaindex = ["llama-index>=0.10.0"]
+docling = ["docling>=2.0.0"]
+unstructured = ["unstructured>=0.15.0"]
 dev = ["pytest>=8.0", "build>=1.2", "twine>=5.1"]
 
 [project.urls]

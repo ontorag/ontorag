@@ -73,19 +73,31 @@ def cmd_ingest(
     out: str = typer.Option("./data/dto", help="Output folder for DTO store"),
     mime: Optional[str] = typer.Option(None, help="Optional MIME type override"),
     force: bool = typer.Option(False, "--force", "-f", help="Re-ingest even if the file was already processed"),
-    engine: str = typer.Option("builtin", "--engine", "-e", help="Ingestion engine: 'builtin' (default, no deps/keys — md/text/epub/html; pdf needs the 'pdf' extra), 'pageindex' (hosted hierarchical PDF, needs PAGEINDEX_API_KEY), or 'llamaindex' (needs the 'llamaindex' extra)."),
+    engine: str = typer.Option(
+        "builtin", "--engine", "-e", envvar="ONTORAG_INGEST_ENGINE",
+        help="Ingestion engine: builtin (default, no deps/keys) | pageindex (hosted "
+             "hierarchical PDF) | llamaindex | docling (layout-aware, self-hosted) | "
+             "unstructured. Non-builtin engines need their extra — see `ontorag doctor`."),
 ):
     """
     Ingest a file and store DocumentDTO + ChunkDTO (JSON + JSONL).
 
-    Two engines are available:
+    Engines (choose with --engine or ONTORAG_INGEST_ENGINE; `ontorag doctor` shows
+    which are installed):
 
-      llamaindex  — traditional fixed-size chunking (1024 tokens, 120 overlap) [default]
-      pageindex   — hierarchical section detection via PageIndex API (requires PAGEINDEX_API_KEY)
+      builtin      — no deps, no key: md/text local splitter, epub/html, pdf via PyMuPDF [default]
+      pageindex    — hierarchical section detection (hosted PageIndex API for PDF)
+      llamaindex   — LlamaIndex fixed-size chunking
+      docling      — IBM Docling: layout-aware PDF/DOCX/PPTX → Markdown, self-hosted
+      unstructured — Unstructured: broad-format partitioning into typed elements
 
     Documents are content-hashed (SHA-256) before chunking. If the same content
     was already ingested, the command skips processing. Use --force to re-ingest.
     """
+    from ontorag.extractor_ingest import ENGINES
+    if engine not in ENGINES:
+        raise typer.BadParameter(
+            f"unknown engine {engine!r}. Choose from: {', '.join(ENGINES)}.", param_hint="--engine")
     doc_id = stable_document_id(file)
     content_hash = hash_file(file)
     _log.info("File %s -> doc_id=%s content_hash=%s engine=%s", file, doc_id, content_hash[:12], engine)
@@ -556,28 +568,24 @@ def cmd_hub(
 def cmd_doctor():
     """Report what this local environment can do: ingestion engines + LLM provider."""
     import importlib.util as _u
+    from ontorag.extractor_ingest import engine_status
 
-    def have(mod: str) -> bool:
-        return _u.find_spec(mod) is not None
+    typer.echo("OntoRAG environment\n\nIngestion engines (choose with --engine / ONTORAG_INGEST_ENGINE):")
+    for name, ok, hint in engine_status():
+        typer.echo(f"  {'OK ' if ok else '-- '} {name:13}{'' if ok else '→ pip install ' + hint}")
+    have_pdf = _u.find_spec("fitz") is not None
+    pdf_hint = "" if have_pdf else "→ pip install 'ontorag[pdf]' (PyMuPDF)"
+    typer.echo(f"  {'OK ' if have_pdf else '-- '} {'builtin-pdf':13}{pdf_hint}")
 
-    key_pi = bool(os.getenv("PAGEINDEX_API_KEY"))
     key_llm = bool(os.getenv("OPENROUTER_API_KEY"))
     base = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
-    checks = [
-        ("ingest: builtin (md / text / epub / html)", True, "no deps, no key"),
-        ("ingest: builtin PDF (PyMuPDF)", have("fitz"), "pip install 'ontorag[pdf]'"),
-        ("ingest: pageindex (hosted hierarchical PDF)", have("pageindex") and key_pi,
-         "pip install 'ontorag[pageindex]' + PAGEINDEX_API_KEY"),
-        ("ingest: llamaindex", have("llama_index"), "pip install 'ontorag[llamaindex]'"),
-        ("LLM for extraction/alignment", key_llm, f"OPENROUTER_API_KEY (base_url={base})"),
-    ]
-    typer.echo("OntoRAG environment:")
-    for name, ok, hint in checks:
-        typer.echo(f"  {'OK ' if ok else '-- '} {name:44} {'' if ok else '→ ' + hint}")
+    typer.echo("\nLLM (extract-schema / extract-instances / align-schema):")
+    typer.echo(f"  {'OK ' if key_llm else '-- '} OPENROUTER_API_KEY {'set' if key_llm else 'missing'}"
+               f"    base_url={base}")
     typer.echo(
-        "\nMinimal local run: `ontorag ingest file.md` needs nothing. Schema/instance "
-        "extraction needs an LLM — set OPENROUTER_API_KEY, or point OPENROUTER_BASE_URL "
-        "at a local OpenAI-compatible server (e.g. ollama: http://localhost:11434/v1)."
+        "\nMinimal local run: `ontorag ingest file.md` needs nothing. Extraction needs an "
+        "LLM — set OPENROUTER_API_KEY, or point OPENROUTER_BASE_URL at a local "
+        "OpenAI-compatible server (e.g. ollama: http://localhost:11434/v1)."
     )
 
 
