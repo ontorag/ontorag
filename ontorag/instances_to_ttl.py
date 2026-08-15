@@ -40,7 +40,7 @@ def instance_proposals_to_graph(
         chunk = chunk_dtos_by_id.get(chunk_id, {})
         prov = (chunk.get("provenance") or {})
 
-        for inst in cp.get("instances", []):
+        for inst in (cp.get("instances") or []):
             cls_name = inst.get("class", "").strip()
             if not cls_name:
                 continue

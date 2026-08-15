@@ -164,9 +164,9 @@ def cmd_extract_schema(
 
     def _on_chunk(idx: int, total: int, chunk_id: str, data: dict) -> None:
         adds = data.get("proposed_additions") or {}
-        n_cls = len(adds.get("classes", []))
-        n_dp = len(adds.get("datatype_properties", []))
-        n_op = len(adds.get("object_properties", []))
+        n_cls = len(adds.get("classes") or [])
+        n_dp = len(adds.get("datatype_properties") or [])
+        n_op = len(adds.get("object_properties") or [])
         n_warn = len(data.get("warnings") or [])
 
         totals["classes"] += n_cls

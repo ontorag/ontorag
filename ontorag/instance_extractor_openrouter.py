@@ -43,7 +43,7 @@ def _chat_json(system: str, user: str) -> Dict[str, Any]:
     }
 
     _log.debug("API request: model=%s prompt_len=%d", llm_config.model(), len(user))
-    r = requests.post(url, headers=headers, json=payload, timeout=120)
+    r = requests.post(url, headers=headers, json=payload, timeout=180)
     r.raise_for_status()
     content = r.json()["choices"][0]["message"]["content"]
     _log.debug("API response: %d chars", len(content))
@@ -142,7 +142,7 @@ def extract_instance_chunk_proposals(
         for attempt in range(max_retries):
             try:
                 data = _chat_json(system, user)
-                _log.debug("  -> extracted %d instances", len(data.get("instances", [])))
+                _log.debug("  -> extracted %d instances", len(data.get("instances") or []))
                 return data
             except Exception as e:
                 _log.info("  Retry %d/%d for chunk %s: %s", attempt + 1, max_retries, chunk_id, e)

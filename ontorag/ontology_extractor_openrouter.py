@@ -83,7 +83,7 @@ def _chat_json(system: str, user: str) -> Dict[str, Any]:
     }
 
     _log.debug("API request: model=%s prompt_len=%d", llm_config.model(), len(user))
-    r = requests.post(url, headers=headers, json=payload, timeout=90)
+    r = requests.post(url, headers=headers, json=payload, timeout=180)
     r.raise_for_status()
     content = r.json()["choices"][0]["message"]["content"]
     _log.debug("API response: %d chars", len(content))
@@ -117,9 +117,10 @@ def extract_schema_chunk_proposals(
             try:
                 data = _chat_json(system, user)
                 adds = data.get("proposed_additions") or {}
+                # tolerate null-valued list fields (models sometimes emit "classes": null)
                 _log.debug("  -> proposals: classes=%d dt_props=%d obj_props=%d",
-                           len(adds.get("classes", [])), len(adds.get("datatype_properties", [])),
-                           len(adds.get("object_properties", [])))
+                           len(adds.get("classes") or []), len(adds.get("datatype_properties") or []),
+                           len(adds.get("object_properties") or []))
                 return data
             except Exception as e:
                 _log.info("  Retry %d/3 for chunk %s: %s", attempt + 1, chunk_id, e)
