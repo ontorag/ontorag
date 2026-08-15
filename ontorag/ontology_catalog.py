@@ -192,6 +192,21 @@ def load_catalog(catalog_dir: str) -> Dict[str, Any]:
     return {"ontologies": []}
 
 
+def catalog_prefixes(catalog_dir: str) -> Dict[str, str]:
+    """Return ``{slug: namespace}`` for every registered baseline ontology.
+
+    Used by ``export-schema-ttl`` to emit baseline-origin terms with their real
+    IRIs (e.g. ``rpg:Character``) instead of local copies. Returns an empty map
+    if the catalog does not exist.
+    """
+    out: Dict[str, str] = {}
+    for o in load_catalog(catalog_dir).get("ontologies", []):
+        slug, ns = o.get("slug"), o.get("namespace")
+        if slug and ns:
+            out[slug] = ns
+    return out
+
+
 def save_catalog(catalog_dir: str, catalog: Dict[str, Any]) -> None:
     p = _catalog_path(catalog_dir)
     p.parent.mkdir(parents=True, exist_ok=True)

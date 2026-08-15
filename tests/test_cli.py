@@ -53,6 +53,28 @@ def test_doctor():
         assert eng in r.stdout, f"doctor did not list engine {eng}"
 
 
+def test_llm_flags_in_help():
+    """OpenRouter settings are exposed as global flags before the subcommand."""
+    r = ontorag("--help")
+    assert r.returncode == 0
+    for flag in ("--model", "--api-key", "--base-url"):
+        assert flag in r.stdout, f"global LLM flag {flag} missing from --help"
+
+
+def test_model_override_reflected_in_doctor():
+    """`--model` (before the subcommand) overrides OPENROUTER_MODEL, offline."""
+    r = ontorag("--model", "zzz/override-model", "doctor")
+    assert r.returncode == 0
+    assert "model=zzz/override-model" in r.stdout
+
+
+def test_hub_command_removed():
+    """The hub is no longer part of the CLI surface."""
+    r = ontorag("hub")
+    assert r.returncode != 0
+    assert "hub" in (r.stdout + r.stderr).lower()  # 'No such command' mentions it
+
+
 def test_unknown_engine_rejected(tmp_path):
     doc = tmp_path / "s.md"
     doc.write_text("# T\n\nhi\n", encoding="utf-8")

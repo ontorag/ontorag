@@ -1,7 +1,6 @@
 # ontorag/ontology_extractor_openrouter.py
 from __future__ import annotations
 import json
-import os
 import time
 from typing import Callable, List, Dict, Any, Optional
 
@@ -11,17 +10,18 @@ ChunkProgressCallback = Callable[[int, int, str, Dict[str, Any]], None]
 import requests
 
 from ontorag.verbosity import get_logger
+from ontorag import llm_config
+from ontorag.card_slim import slim_card
+from ontorag.parallel import map_chunks, get_concurrency
 
 _log = get_logger("ontorag.ontology_extractor")
 
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "openai/gpt-4o-mini")
-OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
-
-APP_NAME = os.getenv("OPENROUTER_APP_NAME", "OntoRAG")
-SITE_URL = os.getenv("OPENROUTER_SITE_URL", "https://ontorag.github.io")
 
 def _build_prompt(chunk: Dict[str, Any], schema_card: Dict[str, Any]) -> str:
+    # With --slim-card, show only the chunk-relevant slice of the current card;
+    # align-schema reconciles anything re-proposed against the full baseline later.
+    # A no-op by default.
+    card = slim_card(schema_card, chunk.get("text", ""))
     return f"""
 You are an ontology induction engine.
 
@@ -29,7 +29,7 @@ CHUNK DTO (JSON):
 {json.dumps(chunk, ensure_ascii=False)}
 
 CURRENT SCHEMA CARD (JSON):
-{json.dumps(schema_card, ensure_ascii=False)}
+{json.dumps(card, ensure_ascii=False)}
 
 Return STRICT JSON with this structure:
 {{
@@ -62,18 +62,19 @@ Rules:
 """.strip()
 
 def _chat_json(system: str, user: str) -> Dict[str, Any]:
-    if not OPENROUTER_API_KEY:
-        raise RuntimeError("OPENROUTER_API_KEY is not set")
+    key = llm_config.api_key()
+    if not key:
+        raise RuntimeError("OPENROUTER_API_KEY is not set (set it in the environment or pass --api-key)")
 
-    url = f"{OPENROUTER_BASE_URL}/chat/completions"
+    url = f"{llm_config.base_url()}/chat/completions"
     headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Authorization": f"Bearer {key}",
         "Content-Type": "application/json",
-        "HTTP-Referer": SITE_URL,
-        "X-Title": APP_NAME,
+        "HTTP-Referer": llm_config.site_url(),
+        "X-Title": llm_config.app_name(),
     }
     payload = {
-        "model": OPENROUTER_MODEL,
+        "model": llm_config.model(),
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
@@ -81,7 +82,7 @@ def _chat_json(system: str, user: str) -> Dict[str, Any]:
         "temperature": 0.2,
     }
 
-    _log.debug("API request: model=%s prompt_len=%d", OPENROUTER_MODEL, len(user))
+    _log.debug("API request: model=%s prompt_len=%d", llm_config.model(), len(user))
     r = requests.post(url, headers=headers, json=payload, timeout=90)
     r.raise_for_status()
     content = r.json()["choices"][0]["message"]["content"]
@@ -100,38 +101,37 @@ def extract_schema_chunk_proposals(
     chunks: List[Dict[str, Any]],
     schema_card: Dict[str, Any],
     on_chunk_done: Optional[ChunkProgressCallback] = None,
+    concurrency: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
     system = "You are a careful ontology induction engine. Output JSON only."
-    out: List[Dict[str, Any]] = []
     total = len(chunks)
+    workers = concurrency if concurrency is not None else get_concurrency()
 
-    _log.info("Schema extraction: %d chunks, model=%s", total, OPENROUTER_MODEL)
+    _log.info("Schema extraction: %d chunks, model=%s, concurrency=%d", total, llm_config.model(), workers)
 
-    for i, ch in enumerate(chunks):
+    def _work(i: int, ch: Dict[str, Any]) -> Dict[str, Any]:
         chunk_id = ch.get("chunk_id", f"#{i}")
         _log.info("  [%d/%d] Processing chunk %s", i + 1, total, chunk_id)
         user = _build_prompt(ch, schema_card)
-
         for attempt in range(3):
             try:
                 data = _chat_json(system, user)
-                n_cls = len((data.get("proposed_additions") or {}).get("classes", []))
-                n_dp = len((data.get("proposed_additions") or {}).get("datatype_properties", []))
-                n_op = len((data.get("proposed_additions") or {}).get("object_properties", []))
-                _log.debug("  -> proposals: classes=%d dt_props=%d obj_props=%d", n_cls, n_dp, n_op)
-                out.append(data)
-                if on_chunk_done:
-                    on_chunk_done(i, total, chunk_id, data)
-                break
+                adds = data.get("proposed_additions") or {}
+                _log.debug("  -> proposals: classes=%d dt_props=%d obj_props=%d",
+                           len(adds.get("classes", [])), len(adds.get("datatype_properties", [])),
+                           len(adds.get("object_properties", [])))
+                return data
             except Exception as e:
                 _log.info("  Retry %d/3 for chunk %s: %s", attempt + 1, chunk_id, e)
                 if attempt == 2:
                     raise
                 time.sleep(1.5 * (attempt + 1))
 
-        if i < total - 1:
-            _log.debug("  Rate-limit pause (10s)")
-            time.sleep(10)
+    def _on_done(i: int, data: Dict[str, Any]) -> None:
+        if on_chunk_done:
+            chunk_id = chunks[i].get("chunk_id", f"#{i}")
+            on_chunk_done(i, total, chunk_id, data)
 
+    out = map_chunks(chunks, _work, on_done=_on_done, concurrency=workers)
     _log.info("Schema extraction complete: %d proposals from %d chunks", len(out), total)
     return out

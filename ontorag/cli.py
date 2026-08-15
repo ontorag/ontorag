@@ -18,6 +18,7 @@ from ontorag.proposal_aggregator import aggregate_chunk_proposals
 from ontorag.proposal_to_ttl import proposal_to_ttl
 from ontorag.blazegraph import blazegraph_upload_ttl, blazegraph_sparql_update
 from ontorag.verbosity import setup_logging, get_logger
+from ontorag import llm_config
 
 app = typer.Typer(add_completion=False, help="OntoRAG CLI — ingestion, ontology proposals, schema cards, RDF export.")
 _log = get_logger("ontorag.cli")
@@ -27,9 +28,36 @@ _log = get_logger("ontorag.cli")
 def _cli_callback(
     verbose: int = typer.Option(0, "--verbose", "-v", count=True,
                                 help="Verbosity level: -v for progress, -vv for debug traces."),
+    model: Optional[str] = typer.Option(None, "--model", "-m",
+                                help="OpenRouter model for extract-schema / align-schema / extract-instances (overrides OPENROUTER_MODEL)."),
+    api_key: Optional[str] = typer.Option(None, "--api-key",
+                                help="OpenRouter API key (overrides OPENROUTER_API_KEY)."),
+    base_url: Optional[str] = typer.Option(None, "--base-url",
+                                help="OpenAI-compatible base URL (overrides OPENROUTER_BASE_URL); point at a local server, e.g. http://localhost:11434/v1 for ollama."),
+    app_name: Optional[str] = typer.Option(None, "--app-name",
+                                help="X-Title header sent to OpenRouter (overrides OPENROUTER_APP_NAME)."),
+    site_url: Optional[str] = typer.Option(None, "--site-url",
+                                help="HTTP-Referer header sent to OpenRouter (overrides OPENROUTER_SITE_URL)."),
+    concurrency: Optional[int] = typer.Option(None, "--concurrency", "-j",
+                                help="Parallel LLM requests for extract-schema/extract-instances (default 4; 1 = sequential)."),
+    slim_card: bool = typer.Option(False, "--slim-card",
+                                help="Prune the schema card to chunk-relevant terms in each prompt (smaller/cheaper prompts; may lower instance recall on large baselines)."),
 ):
-    """OntoRAG — ontology-first RAG pipeline."""
+    """OntoRAG — ontology-first RAG pipeline.
+
+    LLM settings may be given as global flags before the subcommand, or via the
+    environment: `ontorag --model <m> --api-key <k> extract-schema ...`.
+    Precedence: CLI flag > environment variable > built-in default.
+    """
     setup_logging(verbose)
+    llm_config.set_overrides(
+        model=model, api_key=api_key, base_url=base_url,
+        app_name=app_name, site_url=site_url,
+    )
+    from ontorag.card_slim import set_slim
+    from ontorag.parallel import set_concurrency
+    set_slim(slim_card)
+    set_concurrency(concurrency)
 
 
 # -------------------------
@@ -308,7 +336,11 @@ def cmd_build_schema_card(
 def cmd_export_schema_ttl(
     proposal: str = typer.Option(..., help="Path to aggregated schema proposal JSON or alignment JSON"),
     out: str = typer.Option(..., help="Output path for TTL"),
-    namespace: str = typer.Option("http://www.example.com/biz/", help="Base namespace for generated terms"),
+    namespace: str = typer.Option("http://www.example.com/biz/", help="Base namespace for generated (local) terms"),
+    prefix: str = typer.Option("biz", help="Prefix label bound to the local namespace in the TTL"),
+    catalog: str = typer.Option("./data/ontologies", help="Ontology catalog dir — resolves baseline slugs (e.g. 'rpg') to their real IRIs on aligned terms"),
+    baseline: Optional[str] = typer.Option(None, "--baseline",
+        help="Baseline schema_card.json — lets baseline classes referenced only as a domain/range (e.g. rpg:Actor) resolve to their origin IRI too"),
     original_proposal: Optional[str] = typer.Option(None, "--original-proposal",
         help="Path to the original proposal JSON (for descriptions when exporting from alignment)"),
 ):
@@ -318,16 +350,26 @@ def cmd_export_schema_ttl(
     Accepts both raw proposals (output of extract-schema) and alignment results
     (output of align-schema).  When exporting alignment data, pass
     --original-proposal to preserve descriptions and range types.
+
+    If the ontology catalog is available, terms aligned to a baseline ontology
+    are exported with their **origin IRI** — e.g. a `Magus` aligned as a subclass
+    of the `rpg` baseline `Character` becomes `local:Magus rdfs:subClassOf
+    rpg:Character` (interoperable), not a local copy of Character.
     """
+    from ontorag.ontology_catalog import catalog_prefixes
+
     prop = read_json(proposal)
     orig = read_json(original_proposal) if original_proposal else None
+    base_card = read_json(baseline) if baseline else None
+    prefixes = catalog_prefixes(catalog)
 
-    _log.info("Exporting schema TTL: namespace=%s", namespace)
-    g = proposal_to_ttl(prop, biz_ns=namespace, original_proposal=orig)
+    _log.info("Exporting schema TTL: namespace=%s prefix=%s baselines=%s", namespace, prefix, list(prefixes))
+    g = proposal_to_ttl(prop, biz_ns=namespace, original_proposal=orig,
+                        prefixes=prefixes, local_prefix=prefix, baseline_card=base_card)
 
     Path(out).parent.mkdir(parents=True, exist_ok=True)
     g.serialize(destination=out, format="turtle")
-    typer.echo(f"OK export-schema-ttl: out={out}")
+    typer.echo(f"OK export-schema-ttl: out={out}  baselines_resolved={list(prefixes) or 'none'}")
 
 
 @app.command("load-ttl")
@@ -541,29 +583,6 @@ def cmd_init_schema_card(
     )
 
 
-@app.command("hub")
-def cmd_hub(
-    host: str = typer.Option("0.0.0.0", help="Bind host"),
-    port: int = typer.Option(8000, help="Bind port"),
-    reload: bool = typer.Option(False, help="Uvicorn auto-reload (dev only)"),
-):
-    """
-    Start the OntoRAG Hub API server.
-
-    GitHub-authenticated web API that orchestrates the full pipeline.
-    User data (DTOs, chunks, instances) is stored in the user's private
-    GitHub repo.  Ontologies are stored centrally and power dynamic
-    onto-mcp endpoints.
-
-    Required env vars: GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET, HUB_JWT_SECRET.
-    """
-    import uvicorn
-    from ontorag.hub.app import app as hub_app
-
-    _log.info("Starting OntoRAG Hub on %s:%d", host, port)
-    uvicorn.run(hub_app, host=host, port=port, reload=reload)
-
-
 @app.command("doctor")
 def cmd_doctor():
     """Report what this local environment can do: ingestion engines + LLM provider."""
@@ -577,15 +596,17 @@ def cmd_doctor():
     pdf_hint = "" if have_pdf else "→ pip install 'ontorag[pdf]' (PyMuPDF)"
     typer.echo(f"  {'OK ' if have_pdf else '-- '} {'builtin-pdf':13}{pdf_hint}")
 
-    key_llm = bool(os.getenv("OPENROUTER_API_KEY"))
-    base = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+    key_llm = bool(llm_config.api_key())
     typer.echo("\nLLM (extract-schema / extract-instances / align-schema):")
-    typer.echo(f"  {'OK ' if key_llm else '-- '} OPENROUTER_API_KEY {'set' if key_llm else 'missing'}"
-               f"    base_url={base}")
+    typer.echo(f"  {'OK ' if key_llm else '-- '} api_key {'set' if key_llm else 'missing'}"
+               f"    model={llm_config.model()}    base_url={llm_config.base_url()}")
     typer.echo(
-        "\nMinimal local run: `ontorag ingest file.md` needs nothing. Extraction needs an "
-        "LLM — set OPENROUTER_API_KEY, or point OPENROUTER_BASE_URL at a local "
-        "OpenAI-compatible server (e.g. ollama: http://localhost:11434/v1)."
+        "\nOverride any LLM setting per-invocation with global flags before the "
+        "subcommand, e.g.:\n"
+        "  ontorag --model <m> --api-key <k> --base-url <url> extract-schema ...\n"
+        "Precedence: CLI flag > environment variable > default. Point --base-url at a "
+        "local OpenAI-compatible server (e.g. ollama: http://localhost:11434/v1) to run offline.\n"
+        "\nMinimal local run: `ontorag ingest file.md` needs nothing; extraction needs an LLM."
     )
 
 

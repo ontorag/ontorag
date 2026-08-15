@@ -202,14 +202,17 @@ def _extract_text_fallback(file_path: str) -> tuple[str, Optional[str]]:
 
     if ext == ".pdf":
         try:
-            import fitz  # PyMuPDF
-        except ImportError as e:
-            raise RuntimeError(
-                "Local PDF ingestion needs PyMuPDF:\n"
-                "    pip install 'ontorag[pdf]'\n"
-                "or set PAGEINDEX_API_KEY and use --engine pageindex for the hosted engine."
-            ) from e
-        doc = fitz.open(file_path)
+            import pymupdf  # PyMuPDF (>= 1.24); modern import name — no deprecation warning
+        except ImportError:
+            try:
+                import fitz as pymupdf  # legacy name, for older PyMuPDF installs
+            except ImportError as e:
+                raise RuntimeError(
+                    "Local PDF ingestion needs PyMuPDF:\n"
+                    "    pip install 'ontorag[pdf]'\n"
+                    "or set PAGEINDEX_API_KEY and use --engine pageindex for the hosted engine."
+                ) from e
+        doc = pymupdf.open(file_path)
         pages = [page.get_text() for page in doc]
         doc.close()
         return "\n\n".join(pages), "application/pdf"

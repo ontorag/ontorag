@@ -1,5 +1,19 @@
 # OntoRAG System Architecture Review
 
+> **Status update (post-packaging, pipeline re-validated).** The original review
+> below was written against an earlier tree. The two **blocking** issues have
+> since been fixed and the full pipeline has been validated end-to-end on real
+> RPG rulebooks (see README → *Validated end-to-end run*). Resolved since:
+> - **#1 missing `mcp_backend`** — `ontorag/mcp_backend.py` now exists (`SparqlBackend` + `LocalRdfBackend` + `RemoteSparqlBackend`).
+> - **#2 misspelled SPARQL server** — renamed to `ontorag/sparql_server.py`; `sparql-server` works.
+> - **#5 no inter-chunk delay in instance extraction** — `instance_extractor_openrouter.py` now sleeps 10 s between chunks (with 3× retry/backoff).
+> - **#8 incomplete `pyproject.toml` deps** — `fastapi`, `uvicorn`, `fastmcp`, `mcp`, etc. are declared; parsers are optional extras (`pdf`, `pageindex`, `llamaindex`, `docling`, `unstructured`).
+> - **#8 "zero tests"** — offline smoke suite added in `tests/test_cli.py`; CI matrix on 3.12/3.13.
+>
+> **Still open** (valid): #4 Blazegraph TTL injection, #6 fragile SPARQL kind detection, #7 IRI/SPARQL sanitization in MCP tools, #9 `datetime.utcnow()`, #10 legacy root files, #11/#12 minor.
+>
+> **Also since (v0.1.3):** `import fitz`→`import pymupdf` (fixed); extraction now runs chunks **concurrently** (`parallel.py`, `--concurrency`/`-j`, default 4) — the real fix for the latency-bound slowness (prompt size was not the bottleneck); `--slim-card` (`card_slim.py`) is an opt-in prompt/token trimmer; `export-schema-ttl` now emits baseline-origin terms with their real IRIs (`amol:Magus rdfs:subClassOf rpg:Character`) via the catalog `--catalog`/`--baseline` (`proposal_to_ttl` + `catalog_prefixes`). LLM settings + these are global CLI flags (`llm_config.py`). Hub removed from the CLI.
+
 ## Overall Assessment
 
 The architecture is **coherent and well-designed**. The pipeline follows a clear, principled flow:
@@ -165,8 +179,9 @@ Classes are deduplicated by lowercase key (`_key_class`), but the warning check 
 | `export-schema-ttl` | Proposal JSON | OWL/RDFS Turtle | OK |
 | `extract-instances` | Chunks JSONL + schema card | Instance RDF TTL with provenance | OK |
 | `load-ttl` | TTL file + graph IRI | Blazegraph upload | OK (with caveat #4) |
-| `sparql-server` | Ontology TTL + Instances TTL | FastAPI SPARQL endpoint | BROKEN (issue #2) |
-| `mcp-server` | TTL or SPARQL endpoint | MCP tools | BROKEN (issue #1) |
+| `align-schema` | Proposal JSON + baseline card | Alignment JSON (reuse/extend/new) | OK |
+| `sparql-server` | Ontology TTL + Instances TTL | FastAPI SPARQL endpoint | OK (issue #2 resolved) |
+| `mcp-server` | TTL or SPARQL endpoint | MCP tools | OK (issue #1 resolved) |
 
 ---
 
@@ -185,4 +200,4 @@ Classes are deduplicated by lowercase key (`_key_class`), but the warning check 
 
 ## Conclusion
 
-The OntoRAG system architecture is **fundamentally sound**. The pipeline design, governance model, and separation of concerns are well thought out. The two blocking issues (missing `mcp_backend` module and misspelled SPARQL server filename) prevent two CLI commands from working, but the core extraction pipeline (`ingest` → `extract-schema` → `build-schema-card` → `export-schema-ttl` → `extract-instances`) is complete and internally consistent.
+The OntoRAG system architecture is **fundamentally sound**. The pipeline design, governance model, and separation of concerns are well thought out. The two blocking issues (missing `mcp_backend` module and misspelled SPARQL server filename) have been **resolved**; `sparql-server` and `mcp-server` now work. The full pipeline (`ingest` → `extract-schema` → `align-schema` → `build-schema-card` → `export-schema-ttl` → `extract-instances` → SPARQL/MCP) has been validated end-to-end on real RPG rulebooks against the `rpg-schema` baseline. The remaining items are hardening (SPARQL/IRI sanitization, Blazegraph bulk load, prompt-size optimization) rather than correctness blockers.

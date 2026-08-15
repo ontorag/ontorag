@@ -1,21 +1,17 @@
 from __future__ import annotations
 import json
-import os
 import time
-import hashlib
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 import requests
 
 from ontorag.verbosity import get_logger
+from ontorag import llm_config
+from ontorag.card_slim import slim_card
+from ontorag.parallel import map_chunks, get_concurrency
 
 _log = get_logger("ontorag.instance_extractor")
 
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "openai/gpt-4o-mini")
-OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
-APP_NAME = os.getenv("OPENROUTER_APP_NAME", "OntoRAG")
-SITE_URL = os.getenv("OPENROUTER_SITE_URL", "https://ontorag.github.io")
 
 def _strip_fences(s: str) -> str:
     s = s.strip()
@@ -26,18 +22,19 @@ def _strip_fences(s: str) -> str:
     return s
 
 def _chat_json(system: str, user: str) -> Dict[str, Any]:
-    if not OPENROUTER_API_KEY:
-        raise RuntimeError("OPENROUTER_API_KEY is not set")
+    key = llm_config.api_key()
+    if not key:
+        raise RuntimeError("OPENROUTER_API_KEY is not set (set it in the environment or pass --api-key)")
 
-    url = f"{OPENROUTER_BASE_URL}/chat/completions"
+    url = f"{llm_config.base_url()}/chat/completions"
     headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Authorization": f"Bearer {key}",
         "Content-Type": "application/json",
-        "HTTP-Referer": SITE_URL,
-        "X-Title": APP_NAME,
+        "HTTP-Referer": llm_config.site_url(),
+        "X-Title": llm_config.app_name(),
     }
     payload = {
-        "model": OPENROUTER_MODEL,
+        "model": llm_config.model(),
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
@@ -45,7 +42,7 @@ def _chat_json(system: str, user: str) -> Dict[str, Any]:
         "temperature": 0.2,
     }
 
-    _log.debug("API request: model=%s prompt_len=%d", OPENROUTER_MODEL, len(user))
+    _log.debug("API request: model=%s prompt_len=%d", llm_config.model(), len(user))
     r = requests.post(url, headers=headers, json=payload, timeout=120)
     r.raise_for_status()
     content = r.json()["choices"][0]["message"]["content"]
@@ -54,12 +51,14 @@ def _chat_json(system: str, user: str) -> Dict[str, Any]:
     return json.loads(content)
 
 def build_instance_prompt(chunk_dto: Dict[str, Any], schema_card: Dict[str, Any]) -> str:
+    # Optionally prune the card to chunk-relevant terms (--slim-card); a no-op by default.
+    card = slim_card(schema_card, chunk_dto.get("text", ""))
     schema_slim = {
-        "namespace": schema_card.get("namespace"),
-        "classes": schema_card.get("classes", []),
-        "datatype_properties": schema_card.get("datatype_properties", []),
-        "object_properties": schema_card.get("object_properties", []),
-        "aliases": schema_card.get("aliases", []),
+        "namespace": card.get("namespace"),
+        "classes": card.get("classes", []),
+        "datatype_properties": card.get("datatype_properties", []),
+        "object_properties": card.get("object_properties", []),
+        "aliases": card.get("aliases", []),
     }
 
     return f"""
@@ -127,36 +126,30 @@ Rules:
 def extract_instance_chunk_proposals(
     chunks: List[Dict[str, Any]],
     schema_card: Dict[str, Any],
-    max_retries: int = 3
+    max_retries: int = 3,
+    concurrency: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
     system = "You extract structured instances grounded in a provided ontology. Output JSON only."
-    out: List[Dict[str, Any]] = []
     total = len(chunks)
+    workers = concurrency if concurrency is not None else get_concurrency()
 
-    _log.info("Instance extraction: %d chunks, model=%s", total, OPENROUTER_MODEL)
+    _log.info("Instance extraction: %d chunks, model=%s, concurrency=%d", total, llm_config.model(), workers)
 
-    for i, ch in enumerate(chunks):
+    def _work(i: int, ch: Dict[str, Any]) -> Dict[str, Any]:
         chunk_id = ch.get("chunk_id", f"#{i}")
         _log.info("  [%d/%d] Processing chunk %s", i + 1, total, chunk_id)
         user = build_instance_prompt(ch, schema_card)
-
         for attempt in range(max_retries):
             try:
                 data = _chat_json(system, user)
-                n_inst = len(data.get("instances", []))
-                _log.debug("  -> extracted %d instances", n_inst)
-                out.append(data)
-                break
+                _log.debug("  -> extracted %d instances", len(data.get("instances", [])))
+                return data
             except Exception as e:
                 _log.info("  Retry %d/%d for chunk %s: %s", attempt + 1, max_retries, chunk_id, e)
                 if attempt == max_retries - 1:
                     raise
                 time.sleep(1.5 * (attempt + 1))
 
-        # Rate-limit between chunks to avoid hitting API limits
-        if i < total - 1:
-            _log.debug("  Rate-limit pause (10s)")
-            time.sleep(10)
-
+    out = map_chunks(chunks, _work, concurrency=workers)
     _log.info("Instance extraction complete: %d proposals from %d chunks", len(out), total)
     return out

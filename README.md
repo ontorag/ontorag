@@ -76,7 +76,7 @@ Each class and property from a baseline carries an **`origin`** field (e.g., `"f
 
 Documents are **content-hashed** (SHA-256) before any processing occurs. The document ID is derived from the hash, making ingestion **content-addressable**: the same file ingested from different paths or at different times produces the same `document_id`. If a document has already been ingested, the pipeline skips re-chunking automatically (`--force` to override).
 
-Documents are then parsed using **PageIndex** (for PDFs and Markdown — hierarchical, reasoning-based section detection) with fallback text extraction for other formats.  The result is stable **DocumentDTO / ChunkDTO** objects.
+Documents are parsed by a **pluggable ingest engine** (`--engine`). The default engine, **`builtin`**, has no external dependencies and no API keys: Markdown/text via a local recursive splitter, EPUB/HTML via `ebooklib` + `html2text`, and PDF via **PyMuPDF** (`pip install 'ontorag[pdf]'`). Additional engines are available as optional extras — `pageindex` (hosted hierarchical PDF), `llamaindex`, `docling` (IBM layout-aware), and `unstructured` (typed elements). Run `ontorag doctor` to see which engines are installed. The result is stable **DocumentDTO / ChunkDTO** objects, independent of the engine used.
 
 DTOs are:
 - content-addressable (same content = same document ID, no re-processing),
@@ -171,47 +171,39 @@ OntoRAG provides **two MCP servers**:
 
 This allows LLM agents to both select their starting ontology and query the resulting knowledge graph.
 
-### 8. OntoRAG Hub
-
-The **Hub** is a GitHub-like infrastructure for ontology-driven RAG.  It exposes the full pipeline as a web API with a clear data-sovereignty model:
-
-```
-User (browser / agent)
-  │
-  ▼
-OntoRAG Hub API (FastAPI)
-  │  GitHub OAuth login → JWT session
-  │
-  ├── Ingest / Extract / Instances
-  │     │
-  │     ▼
-  │   User's private GitHub repo: {user}/ontorag-data
-  │     └── data/dto/  data/proposals/  data/instances/
-  │
-  └── Ontology Registry (central, shared)
-        └── schema cards → dynamic onto-mcp (near-zero storage)
-```
-
-**Key principles:**
-
-- **User data stays in the user's GitHub account.** DTOs, chunks, proposals, and instance TTLs are stored in a private repo (`ontorag-data`) created automatically via the GitHub API.  OntoRAG Hub never holds user documents on its own servers.
-
-- **Ontologies are centrally shared.** Published schema cards live on the Hub server and can be referenced by any user for extraction or composition.
-
-- **MCP servers are generated dynamically** from the ontology structure alone.  Since a schema card is just a small JSON file describing classes and properties, the resulting onto-mcp is nearly volume-less — it needs no user data, only the schema structure and SPARQL templates.
-
-- **Content-addressable dedup** applies at the Hub level too.  Uploading the same file content twice (even from different users) produces the same `document_id`, and the second ingest is skipped.
-
 ---
 
 ## Installation
 
+OntoRAG is on PyPI (Python ≥ 3.12):
+
 ```bash
-pip install -e .
+pip install ontorag                 # core — ingests Markdown/text/HTML/EPUB out of the box
+pip install 'ontorag[pdf]'          # + PDF ingest via PyMuPDF (builtin engine)
 ```
 
-Core dependencies (declared in `pyproject.toml`):
-`typer`, `requests`, `pydantic`, `rdflib`, `pageindex`, `pymupdf`, `python-dotenv`, `fastapi`, `uvicorn`, `fastmcp`, `EbookLib`, `html2text`, `httpx`, `PyJWT`, `python-multipart`.
+Optional ingest engines are extras — install only what you need:
+
+```bash
+pip install 'ontorag[pageindex]'    # hosted hierarchical PDF (needs PAGEINDEX_API_KEY)
+pip install 'ontorag[llamaindex]'   # LlamaIndex fixed-chunk ingest
+pip install 'ontorag[docling]'      # IBM Docling, layout-aware PDF/DOCX/PPTX
+pip install 'ontorag[unstructured]' # Unstructured typed elements
+```
+
+Core dependencies (always installed): `typer`, `requests`, `pydantic`, `rdflib`, `python-dotenv`, `fastapi`, `uvicorn`, `fastmcp`, `mcp`, `EbookLib`, `html2text`, `httpx`, `PyJWT`, `python-multipart`. Parsers (`pymupdf`, `pageindex`, `llama-index`, `docling`, `unstructured`) are **optional extras**.
+
+After installing, check your environment and available engines:
+
+```bash
+ontorag doctor
+```
+
+For local development (editable install):
+
+```bash
+pip install -e '.[pdf,dev]'
+```
 
 ---
 
@@ -225,7 +217,7 @@ cp .example.env .env
 
 ```env
 OPENROUTER_API_KEY=...
-OPENROUTER_MODEL=openai/gpt-4o-mini
+OPENROUTER_MODEL=~deepseek/deepseek-v4-flash-latest
 OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
 OPENROUTER_APP_NAME=OntoRAG
 OPENROUTER_SITE_URL=https://ontorag.github.io
@@ -234,11 +226,60 @@ OPENROUTER_SITE_URL=https://ontorag.github.io
 BLAZEGRAPH_ENDPOINT=http://localhost:9999/blazegraph/namespace/ontorag/sparql
 ```
 
+**Model choice matters.** Every LLM step (`extract-schema`, `align-schema`,
+`extract-instances`) sends the full schema card in each prompt, so a fast,
+capable model is worth it. `~deepseek/deepseek-v4-flash-latest` (the tilde `~`
+is part of the OpenRouter "latest" alias; it resolves to the newest
+`deepseek/deepseek-v4-flash`) is a good default — validated end-to-end below.
+Avoid `*:free` slugs for real runs: they are frequently retired and the shared
+free router is slow enough to stall multi-chunk instance extraction.
+
+**Local / self-hosted models.** Point `OPENROUTER_BASE_URL` at any
+OpenAI-compatible endpoint to run fully offline — e.g. a local Ollama:
+
+```env
+OPENROUTER_BASE_URL=http://localhost:11434/v1
+OPENROUTER_MODEL=qwen2.5:14b
+OPENROUTER_API_KEY=ollama    # any non-empty value
+```
+
+**Overriding per-invocation (CLI flags).** Every OpenRouter setting is also a
+global flag, placed *before* the subcommand. Flags win over environment
+variables, which win over built-in defaults:
+
+```bash
+ontorag --model '~deepseek/deepseek-v4-flash-latest' --api-key sk-... \
+        extract-schema --chunks c.jsonl --schema-card card.json --out prop.json
+
+# run against a local ollama without touching the environment
+ontorag --base-url http://localhost:11434/v1 --api-key ollama --model qwen2.5:14b \
+        extract-instances --chunks c.jsonl --schema-card card.json --out-ttl inst.ttl
+```
+
+| Flag | Overrides / env | Applies to |
+|---|---|---|
+| `--model` / `-m` | `OPENROUTER_MODEL` | extract-schema, align-schema, extract-instances |
+| `--api-key` | `OPENROUTER_API_KEY` | ” |
+| `--base-url` | `OPENROUTER_BASE_URL` | ” |
+| `--app-name` | `OPENROUTER_APP_NAME` | ” |
+| `--site-url` | `OPENROUTER_SITE_URL` | ” |
+| `--concurrency` / `-j` | `ONTORAG_CONCURRENCY` (default 4) | extract-schema, extract-instances |
+| `--slim-card` | `ONTORAG_SLIM_CARD` (default off) | extract-schema, extract-instances |
+
+**Speed:** the per-chunk LLM call is latency-bound, so extraction runs chunks
+**concurrently** (`-j`, default 4). Raise it for long documents (`-j 8`), or set
+`-j 1` for strictly sequential. `--slim-card` prunes the schema card to
+chunk-relevant terms — smaller, cheaper prompts, but it can lower
+instance-extraction recall on large baselines, so it is **off by default**.
+
+`ontorag doctor` prints the effective model, base URL, and whether a key is set.
+
 ---
 
 ## CLI reference
 
-All commands are available via `ontorag <command> --help`.
+All commands are available via `ontorag <command> --help`. LLM settings are
+global flags placed before the subcommand (see *Configuration* above).
 
 ### Ontology catalog commands
 
@@ -275,8 +316,12 @@ ontorag ontology-mcp --catalog ./data/ontologies --port 9020
 **Ingest a document:**
 
 ```bash
-ontorag ingest data/raw/manual.pdf --out data/dto
+ontorag ingest data/raw/manual.pdf --out data/dto          # builtin engine (default)
 ontorag ingest data/raw/handbook.epub --out data/dto
+
+# Pick a different engine explicitly (or set ONTORAG_INGEST_ENGINE):
+ontorag ingest data/raw/manual.pdf --engine docling --out data/dto
+ontorag ingest data/raw/manual.pdf --engine pageindex --out data/dto   # needs PAGEINDEX_API_KEY
 
 # Re-ingesting the same file is a no-op (content-hashed):
 ontorag ingest data/raw/manual.pdf --out data/dto
@@ -288,7 +333,14 @@ ontorag ingest data/raw/manual.pdf --out data/dto --force
 
 The file is **content-hashed** (SHA-256) before chunking. If the same content was already ingested, the command skips processing and reports the existing document ID. Use `--force` to re-ingest anyway.
 
-Uses PageIndex for PDFs and Markdown (hierarchical section tree) with fallback text extraction for other formats (DOCX, HTML, CSV, EPUB, ...).  Stores DocumentDTO + ChunkDTOs as JSON + JSONL.
+The engine is selected with `--engine {builtin|pageindex|llamaindex|docling|unstructured}` (default `builtin`, no keys/deps). Whatever the engine, the output is the same stable DocumentDTO + ChunkDTOs (JSON + JSONL). Run `ontorag doctor` to see which engines are installed:
+
+```bash
+ontorag doctor
+# → OntoRAG environment
+#   LLM: OpenRouter (model=~deepseek/deepseek-v4-flash-latest)
+#   ingest engines: builtin ✓  pageindex ✓  llamaindex (pip install 'ontorag[llamaindex]')  ...
+```
 
 **Extract ontology proposals:**
 
@@ -300,6 +352,17 @@ ontorag extract-schema \
 ```
 
 Sends each chunk + the current schema card to the LLM. The LLM proposes new classes, properties, events, and merge suggestions. Per-chunk proposals are aggregated into a single document-level proposal.
+
+**Align the proposal to a baseline (optional but recommended):**
+
+```bash
+ontorag align-schema \
+  --proposal data/proposals/doc_x.schema.json \
+  --baseline data/schema/schema_card.json \
+  --out data/proposals/doc_x.alignment.json
+```
+
+For each induced class/property, the LLM decides whether it should **reuse** a baseline term, **extend** one (subclass/subproperty), or stand as **new** — with a rationale for each decision. This keeps the graph anchored to standard vocabularies instead of reinventing them. Alignment supports **partial-save and auto-resume**: if interrupted, re-running resumes from the last completed category. The aligned JSON is a drop-in replacement for the raw proposal in the next two steps.
 
 **Build schema card (deterministic merge):**
 
@@ -378,34 +441,6 @@ ontorag mcp-server \
   --sparql-endpoint http://localhost:9999/blazegraph/namespace/ontorag/sparql
 ```
 
-### Hub commands
-
-**Start the Hub API server:**
-
-```bash
-ontorag hub --port 8000
-```
-
-Required env vars: `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `HUB_JWT_SECRET`.
-
-**Hub API endpoints:**
-
-| Method | Path | Auth | Description |
-|--------|------|------|-------------|
-| GET | `/auth/login` | -- | Redirect to GitHub OAuth |
-| GET | `/auth/callback?code=...` | -- | Exchange code for JWT |
-| GET | `/auth/me` | JWT | Current user profile |
-| POST | `/api/ingest` | JWT | Upload & chunk a file (multipart) |
-| POST | `/api/extract-schema` | JWT | Run ontology induction |
-| POST | `/api/extract-instances` | JWT | Extract instances |
-| GET | `/api/documents` | JWT | List user's ingested documents |
-| GET | `/api/ontologies` | -- | List centrally registered ontologies |
-| POST | `/api/ontologies` | JWT | Publish a schema card as shared ontology |
-| GET | `/api/ontologies/{slug}` | -- | Get a schema card |
-| GET | `/api/mcp/{slug}` | -- | Dynamic MCP endpoint info |
-
-User artifacts (DTOs, chunks, proposals, instances) are stored in the user's private `ontorag-data` GitHub repo.  Ontologies are stored centrally on the Hub server.
-
 ---
 
 ## End-to-end workflow
@@ -428,32 +463,94 @@ ontorag extract-schema \
   --schema-card data/schema/schema_card.json \
   --out data/proposals/report.schema.json
 
-# 5. Review and merge proposals into the schema card
+# 5. Align the proposal to the baseline (reuse / extend / new)
+ontorag align-schema \
+  --proposal data/proposals/report.schema.json \
+  --baseline data/schema/schema_card.json \
+  --out data/proposals/report.alignment.json
+
+# 6. Merge the aligned proposal into the schema card
 ontorag build-schema-card \
   --previous data/schema/schema_card.json \
-  --proposal data/proposals/report.schema.json \
+  --proposal data/proposals/report.alignment.json \
   --out data/schema/schema_card.json
 
-# 6. Export schema to Turtle
+# 7. Export schema to Turtle
 ontorag export-schema-ttl \
-  --proposal data/proposals/report.schema.json \
+  --proposal data/proposals/report.alignment.json \
   --out data/schema/staging_schema.ttl
 
-# 7. Extract instances with provenance
+# 8. Extract instances with provenance
 ontorag extract-instances \
   --chunks data/dto/chunks/doc_*.jsonl \
   --schema-card data/schema/schema_card.json \
   --out-ttl data/instances/report.instances.ttl
 
-# 8. Inspect the graph locally
+# 9. Inspect the graph locally
 ontorag sparql-server \
   --onto data/schema/staging_schema.ttl \
   --inst data/instances/report.instances.ttl
 
-# 9. Expose to LLM agents
+# 10. Expose to LLM agents
 ontorag mcp-server \
   --onto data/schema/staging_schema.ttl \
   --inst data/instances/report.instances.ttl
+```
+
+---
+
+## Validated end-to-end run
+
+The full pipeline has been validated against the public
+[**rpg-schema**](https://github.com/rpg-schema/rpg-schema.github.io) baseline
+ontology (68 classes / 47 datatype / 93 object properties) using
+`~deepseek/deepseek-v4-flash-latest`, on two independent, unrelated RPG
+rulebooks — proving the process is corpus-agnostic (same commands, same
+baseline, different documents):
+
+| Stage | Daggerheart SRD (0.9 MB PDF) | D&D 5.2.1 SRD (6 MB PDF) |
+|---|---|---|
+| `ingest` (builtin / PyMuPDF) | 181 chunks | 503 chunks |
+| `extract-schema` (4 chunks) | 17 classes, 5 dt, 9 obj | 66 classes, 0 dt, 5 obj |
+| `align-schema` → rpg baseline | reuse 0 · extend 11 · **new 20** | reuse 0 · extend 41 · **new 30** |
+| `export-schema-ttl` | 70 triples | 122 triples |
+| `extract-instances` (4 chunks) | 63 instances, **605 triples** | validated on Daggerheart (see note) |
+| instance types found | Character, GameMaster, DualityDice, DeathMove, RuleSet, CampaignFrame, … | 41 induced classes `extend` rpg-schema classes |
+
+Both runs use the identical command sequence and the identical `rpg-schema`
+baseline — only the input file changes. The D&D run drove the alignment harder
+(66 induced classes vs 17): 41 were aligned as **`extend`** (domain
+specializations — subclasses of rpg-schema classes) and 30 as **`new`**, each
+with a recorded rationale.
+
+> **Note on `extract-instances` speed.** The per-chunk LLM call is
+> latency-bound (a minute or more each on some hosted models), so the extractors
+> process chunks **concurrently** (`-j`, default 4) — a long document sees a
+> roughly N× wall-clock speedup. Raise `-j` for large corpora. Prompt *size* is
+> a much smaller factor; `--slim-card` trims it further (cheaper tokens) at some
+> recall cost, so it is off by default.
+
+Reproduce it (any RPG PDF works — swap the file):
+
+```bash
+pip install 'ontorag[pdf]'
+export OPENROUTER_API_KEY=sk-...
+export OPENROUTER_MODEL='~deepseek/deepseek-v4-flash-latest'
+
+# rpg-schema as the baseline ontology
+curl -sL https://raw.githubusercontent.com/rpg-schema/rpg-schema.github.io/refs/heads/main/src/data/rpg-schema.ttl -o rpg-schema.ttl
+ontorag register-ontology rpg ./rpg-schema.ttl --catalog data/ont --label "RPG Schema"
+ontorag init-schema-card --baselines rpg --catalog data/ont \
+  --namespace http://ontorag.dev/dh/ --out data/schema/card.json
+
+# ingest → induce → align → merge → export → instances
+ontorag ingest your-rulebook.pdf --out data/dto
+CH=$(ls data/dto/chunks/*.jsonl | head -1)
+ontorag extract-schema  --chunks "$CH" --schema-card data/schema/card.json --out data/proposal.json
+ontorag align-schema    --proposal data/proposal.json --baseline data/schema/card.json --out data/alignment.json
+ontorag build-schema-card --previous data/schema/card.json --proposal data/alignment.json --out data/schema/card2.json
+ontorag export-schema-ttl --proposal data/alignment.json --namespace http://ontorag.dev/dh/ --out data/schema.ttl
+ontorag extract-instances --chunks "$CH" --schema-card data/schema/card2.json --out-ttl data/instances.ttl
 ```
 
 ---
@@ -477,9 +574,12 @@ Origin is set when an item first enters the schema card and is preserved across 
 ```
 ontorag/
   __init__.py
-  cli.py                            # Typer CLI (13 commands, incl. hub)
+  cli.py                            # Typer CLI (14 commands, incl. doctor)
+  llm_config.py                     # OpenRouter settings resolver (CLI flag > env > default)
+  parallel.py                       # bounded-concurrency chunk processing (--concurrency)
+  card_slim.py                      # opt-in per-chunk schema-card pruning (--slim-card)
   dto.py                            # DocumentDTO, ChunkDTO, ProvenanceDTO + content hashing
-  extractor_ingest.py               # PageIndex doc parsing + fallback chunking
+  extractor_ingest.py               # pluggable ingest engines (builtin default; pageindex/llamaindex/docling/unstructured)
   storage_jsonl.py                  # JSONL persistence for DTOs
   ontology_extractor_openrouter.py  # LLM schema proposal extraction
   instance_extractor_openrouter.py  # LLM instance extraction
@@ -495,20 +595,10 @@ ontorag/
   ontology_catalog.py               # Baseline catalog + OWL/TTL converter
   ontology_mcp.py                   # Ontology catalog MCP server
 
-  hub/
-    __init__.py
-    app.py                          # Hub FastAPI app (all routes)
-    auth.py                         # GitHub OAuth + JWT sessions
-    github_storage.py               # Read/write artifacts to user's GitHub repos
-    models.py                       # Pydantic request/response models
-
-app.py                              # Vercel-deployed ontology catalog API
-
 data/
   ontologies/
     catalog.json                    # Ontology catalog manifest
     *.ttl                           # Registered baseline ontologies
-  hub_ontologies/                   # Central ontology registry (Hub)
 ```
 
 ---

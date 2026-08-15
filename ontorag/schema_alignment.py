@@ -12,21 +12,15 @@ set correct ``origin`` values and link back to the source TTLs.
 from __future__ import annotations
 
 import json
-import os
 import time
 from typing import Any, Callable, Dict, List, Optional
 
 import requests
 
 from ontorag.verbosity import get_logger
+from ontorag import llm_config
 
 _log = get_logger("ontorag.schema_alignment")
-
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "openai/gpt-4o-mini")
-OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
-APP_NAME = os.getenv("OPENROUTER_APP_NAME", "OntoRAG")
-SITE_URL = os.getenv("OPENROUTER_SITE_URL", "https://ontorag.github.io")
 
 AlignProgressCallback = Callable[..., None]
 """(category, category_result, *, resumed=False) → None"""
@@ -35,18 +29,19 @@ AlignProgressCallback = Callable[..., None]
 # ── LLM helper ────────────────────────────────────────────────────────
 
 def _chat_json(system: str, user: str) -> Dict[str, Any]:
-    if not OPENROUTER_API_KEY:
-        raise RuntimeError("OPENROUTER_API_KEY is not set")
+    key = llm_config.api_key()
+    if not key:
+        raise RuntimeError("OPENROUTER_API_KEY is not set (set it in the environment or pass --api-key)")
 
-    url = f"{OPENROUTER_BASE_URL}/chat/completions"
+    url = f"{llm_config.base_url()}/chat/completions"
     headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Authorization": f"Bearer {key}",
         "Content-Type": "application/json",
-        "HTTP-Referer": SITE_URL,
-        "X-Title": APP_NAME,
+        "HTTP-Referer": llm_config.site_url(),
+        "X-Title": llm_config.app_name(),
     }
     payload = {
-        "model": OPENROUTER_MODEL,
+        "model": llm_config.model(),
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
@@ -54,7 +49,7 @@ def _chat_json(system: str, user: str) -> Dict[str, Any]:
         "temperature": 0.1,
     }
 
-    _log.debug("API request: model=%s prompt_len=%d", OPENROUTER_MODEL, len(user))
+    _log.debug("API request: model=%s prompt_len=%d", llm_config.model(), len(user))
     _log.debug("API prompt:\n%s", user)
     r = requests.post(url, headers=headers, json=payload, timeout=120)
     r.raise_for_status()
@@ -69,6 +64,30 @@ def _chat_json(system: str, user: str) -> Dict[str, Any]:
             content = content[4:].strip()
 
     return json.loads(content)
+
+
+def _normalize_alignments(raw: Any) -> Dict[str, Any]:
+    """Coerce an LLM alignment response into ``{"alignments": [dict, ...]}``.
+
+    Models do not always honour the documented envelope. Observed shapes:
+    - a bare JSON array ``[{...}, {...}]`` (most common on larger inputs),
+    - the correct ``{"alignments": [...]}`` envelope,
+    - the list wrapped under a differently-named key.
+
+    Be liberal in what we accept, and keep only well-formed object entries so
+    the downstream ``a.get("action")`` summary never sees a non-dict.
+    """
+    if isinstance(raw, list):
+        items = raw
+    elif isinstance(raw, dict):
+        if isinstance(raw.get("alignments"), list):
+            items = raw["alignments"]
+        else:
+            # fall back to the first list-valued field, if any
+            items = next((v for v in raw.values() if isinstance(v, list)), [])
+    else:
+        items = []
+    return {"alignments": [a for a in items if isinstance(a, dict)]}
 
 
 # ── Prompt builders ───────────────────────────────────────────────────
@@ -240,7 +259,7 @@ def _align_classes(
     )
 
     system = "You are a careful ontology alignment engine. Output JSON only."
-    return _chat_json(system, prompt)
+    return _normalize_alignments(_chat_json(system, prompt))
 
 
 def _align_properties(
@@ -278,7 +297,7 @@ def _align_properties(
     )
 
     system = "You are a careful ontology alignment engine. Output JSON only."
-    return _chat_json(system, prompt)
+    return _normalize_alignments(_chat_json(system, prompt))
 
 
 # ── Public entry point ────────────────────────────────────────────────
