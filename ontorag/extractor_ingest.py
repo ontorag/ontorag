@@ -184,7 +184,7 @@ def _run_markdown_splitter(file_path: str) -> tuple[Optional[str], List[Dict[str
 # ── Fallback text extraction (used by PageIndex for non-PDF/MD) ──────
 
 def _extract_text_fallback(file_path: str) -> tuple[str, Optional[str]]:
-    """Extract raw text from non-PDF/Markdown files."""
+    """Local (no-API) text extraction for non-Markdown files."""
     ext = Path(file_path).suffix.lower()
 
     if ext == ".epub":
@@ -200,14 +200,19 @@ def _extract_text_fallback(file_path: str) -> tuple[str, Optional[str]]:
             parts.append(h.handle(item.get_content().decode("utf-8", errors="replace")))
         return "\n\n".join(parts), "application/epub+zip"
 
-    try:
-        import fitz  # PyMuPDF
+    if ext == ".pdf":
+        try:
+            import fitz  # PyMuPDF
+        except ImportError as e:
+            raise RuntimeError(
+                "Local PDF ingestion needs PyMuPDF:\n"
+                "    pip install 'ontorag[pdf]'\n"
+                "or set PAGEINDEX_API_KEY and use --engine pageindex for the hosted engine."
+            ) from e
         doc = fitz.open(file_path)
         pages = [page.get_text() for page in doc]
         doc.close()
-        return "\n\n".join(pages), None
-    except Exception:
-        pass
+        return "\n\n".join(pages), "application/pdf"
 
     return Path(file_path).read_text(encoding="utf-8", errors="replace"), None
 
@@ -223,8 +228,13 @@ def _chunk_text(text: str, chunk_size: int = 3000, overlap: int = 200) -> List[s
     return chunks
 
 
-def extract_with_pageindex(file_path: str, mime: Optional[str] = None) -> DocumentDTO:
-    """Ingest using PageIndex (hierarchical) + fallback for non-PDF/MD."""
+def extract_with_pageindex(file_path: str, mime: Optional[str] = None,
+                           pdf_via_api: bool = True) -> DocumentDTO:
+    """Ingest using PageIndex (hierarchical) + fallback for non-PDF/MD.
+
+    When `pdf_via_api` is False (the `builtin` engine) or no PAGEINDEX_API_KEY is
+    set, PDFs are extracted locally with PyMuPDF instead of the hosted API.
+    """
     content_hash = hash_file(file_path)
     doc_id = stable_document_id(file_path)
     ext = Path(file_path).suffix.lower()
@@ -260,7 +270,7 @@ def extract_with_pageindex(file_path: str, mime: Optional[str] = None) -> Docume
             out.chunks.append(chunk)
             _log.debug("  chunk %d: id=%s len=%d section=%s", i, chunk.chunk_id, len(text), section)
 
-    elif ext in _PAGEINDEX_EXTS:
+    elif ext in _PAGEINDEX_EXTS and pdf_via_api and os.environ.get("PAGEINDEX_API_KEY"):
         _log.info("Using PageIndex API for %s", ext)
         doc_title, flat_chunks, _pages = _run_pageindex(file_path)
         out.title = doc_title
@@ -377,20 +387,32 @@ def extract_with_llamaindex(file_path: str, mime: Optional[str] = None) -> Docum
 #  Unified dispatcher
 # =====================================================================
 
-ENGINES = {"pageindex": extract_with_pageindex, "llamaindex": extract_with_llamaindex}
+def extract_builtin(file_path: str, mime: Optional[str] = None) -> DocumentDTO:
+    """Dependency-free local ingestion — no API key required.
+    Markdown → local splitter; PDF → PyMuPDF (needs the ``pdf`` extra);
+    epub/html → ebooklib/html2text; plain text otherwise."""
+    return extract_with_pageindex(file_path, mime=mime, pdf_via_api=False)
+
+
+ENGINES = {
+    "builtin": extract_builtin,
+    "pageindex": extract_with_pageindex,
+    "llamaindex": extract_with_llamaindex,
+}
 
 
 def extract_document(
     file_path: str,
     mime: Optional[str] = None,
-    engine: str = "llamaindex",
+    engine: str = "builtin",
 ) -> DocumentDTO:
     """Ingest a document using the selected engine.
 
     Args:
         file_path: Path to the input file.
         mime: Optional MIME type override.
-        engine: ``"llamaindex"`` (default) or ``"pageindex"``.
+        engine: ``"builtin"`` (default, no deps/keys) | ``"pageindex"`` (hosted
+            hierarchical PDF) | ``"llamaindex"`` (LlamaIndex chunking).
     """
     fn = ENGINES.get(engine)
     if fn is None:

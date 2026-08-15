@@ -25,17 +25,18 @@ def test_help():
 def test_subcommand_help():
     for cmd in ["ingest", "extract-schema", "build-schema-card", "export-schema-ttl",
                 "extract-instances", "sparql-server", "mcp-server", "init-schema-card",
-                "register-ontology", "align-schema"]:
+                "register-ontology", "align-schema", "doctor"]:
         r = ontorag(cmd, "--help")
         assert r.returncode == 0, f"{cmd} --help failed: {r.stderr}"
 
 
-def test_ingest_markdown_offline(tmp_path):
+def test_ingest_markdown_default_engine_offline(tmp_path):
+    """The DEFAULT engine (builtin) ingests markdown with no deps and no API key."""
     doc = tmp_path / "sample.md"
     doc.write_text("# Title\n\nAlice knows Bob. Bob works at Acme in Paris.\n\n"
                    "## More\n\nAcme is a company.\n", encoding="utf-8")
     out = tmp_path / "dto"
-    r = ontorag("ingest", str(doc), "--engine", "pageindex", "--out", str(out))
+    r = ontorag("ingest", str(doc), "--out", str(out))          # no --engine
     assert r.returncode == 0, r.stderr
     jsonl = list(out.glob("chunks/*.jsonl"))
     assert jsonl, "no chunks JSONL produced"
@@ -44,13 +45,20 @@ def test_ingest_markdown_offline(tmp_path):
     assert all("text" in r or "content" in r for r in recs)
 
 
+def test_doctor():
+    r = ontorag("doctor")
+    assert r.returncode == 0
+    assert "OntoRAG environment" in r.stdout
+    assert "builtin" in r.stdout
+
+
 def test_llamaindex_engine_missing_is_friendly(tmp_path):
-    """Without the extra, the default engine fails with a clear, actionable message
-    (not a raw ModuleNotFoundError)."""
+    """Selecting the llamaindex engine without its extra gives a clear, actionable
+    message (not a raw ModuleNotFoundError)."""
     if HAVE_LLAMAINDEX:
         pytest.skip("llama-index installed")
     doc = tmp_path / "s.md"
     doc.write_text("# T\n\nhello world.\n", encoding="utf-8")
-    r = ontorag("ingest", str(doc), "--out", str(tmp_path / "d"))
+    r = ontorag("ingest", str(doc), "--engine", "llamaindex", "--out", str(tmp_path / "d"))
     assert r.returncode != 0
     assert "ontorag[llamaindex]" in (r.stdout + r.stderr)

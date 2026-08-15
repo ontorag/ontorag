@@ -73,7 +73,7 @@ def cmd_ingest(
     out: str = typer.Option("./data/dto", help="Output folder for DTO store"),
     mime: Optional[str] = typer.Option(None, help="Optional MIME type override"),
     force: bool = typer.Option(False, "--force", "-f", help="Re-ingest even if the file was already processed"),
-    engine: str = typer.Option("llamaindex", "--engine", "-e", help="Ingestion engine: 'llamaindex' (fixed-size chunks, default) or 'pageindex' (hierarchical, requires API key)"),
+    engine: str = typer.Option("builtin", "--engine", "-e", help="Ingestion engine: 'builtin' (default, no deps/keys — md/text/epub/html; pdf needs the 'pdf' extra), 'pageindex' (hosted hierarchical PDF, needs PAGEINDEX_API_KEY), or 'llamaindex' (needs the 'llamaindex' extra)."),
 ):
     """
     Ingest a file and store DocumentDTO + ChunkDTO (JSON + JSONL).
@@ -550,6 +550,35 @@ def cmd_hub(
 
     _log.info("Starting OntoRAG Hub on %s:%d", host, port)
     uvicorn.run(hub_app, host=host, port=port, reload=reload)
+
+
+@app.command("doctor")
+def cmd_doctor():
+    """Report what this local environment can do: ingestion engines + LLM provider."""
+    import importlib.util as _u
+
+    def have(mod: str) -> bool:
+        return _u.find_spec(mod) is not None
+
+    key_pi = bool(os.getenv("PAGEINDEX_API_KEY"))
+    key_llm = bool(os.getenv("OPENROUTER_API_KEY"))
+    base = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+    checks = [
+        ("ingest: builtin (md / text / epub / html)", True, "no deps, no key"),
+        ("ingest: builtin PDF (PyMuPDF)", have("fitz"), "pip install 'ontorag[pdf]'"),
+        ("ingest: pageindex (hosted hierarchical PDF)", have("pageindex") and key_pi,
+         "pip install 'ontorag[pageindex]' + PAGEINDEX_API_KEY"),
+        ("ingest: llamaindex", have("llama_index"), "pip install 'ontorag[llamaindex]'"),
+        ("LLM for extraction/alignment", key_llm, f"OPENROUTER_API_KEY (base_url={base})"),
+    ]
+    typer.echo("OntoRAG environment:")
+    for name, ok, hint in checks:
+        typer.echo(f"  {'OK ' if ok else '-- '} {name:44} {'' if ok else '→ ' + hint}")
+    typer.echo(
+        "\nMinimal local run: `ontorag ingest file.md` needs nothing. Schema/instance "
+        "extraction needs an LLM — set OPENROUTER_API_KEY, or point OPENROUTER_BASE_URL "
+        "at a local OpenAI-compatible server (e.g. ollama: http://localhost:11434/v1)."
+    )
 
 
 def main():
