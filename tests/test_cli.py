@@ -1,6 +1,7 @@
 """Offline smoke tests — no API keys, no network. Exercise the CLI surface and
 the dependency-free markdown ingest path."""
 import json
+import os
 import subprocess
 
 import pytest
@@ -13,7 +14,10 @@ except ImportError:
 
 
 def ontorag(*args):
-    return subprocess.run(["ontorag", *args], capture_output=True, text=True)
+    # Force a wide terminal so Rich/Typer doesn't wrap or truncate option names
+    # in --help (CI runs with a narrow default width, which hid flags like --model).
+    env = {**os.environ, "COLUMNS": "200"}
+    return subprocess.run(["ontorag", *args], capture_output=True, text=True, env=env)
 
 
 def test_help():
