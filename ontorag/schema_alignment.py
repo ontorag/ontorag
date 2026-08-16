@@ -53,7 +53,9 @@ def _chat_json(system: str, user: str) -> Dict[str, Any]:
     _log.debug("API prompt:\n%s", user)
     r = requests.post(url, headers=headers, json=payload, timeout=120)
     r.raise_for_status()
-    content = r.json()["choices"][0]["message"]["content"]
+    content = r.json()["choices"][0]["message"].get("content")
+    if not content:  # some models (e.g. reasoning ones) can return null content
+        raise RuntimeError("model returned empty/null content")
     _log.debug("API response: %d chars", len(content))
     _log.debug("API raw response:\n%s", content)
 

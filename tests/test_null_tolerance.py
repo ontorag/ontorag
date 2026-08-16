@@ -3,9 +3,29 @@
 the extractor's success path was being caught and retried as if the LLM call had
 failed, burning 3× the calls and stalling the run.
 """
+import pytest
+
 import ontorag.ontology_extractor_openrouter as oe
 import ontorag.instance_extractor_openrouter as ie
 from ontorag.instances_to_ttl import instance_proposals_to_graph
+
+
+class _FakeResp:
+    def __init__(self, content):
+        self._content = content
+    def raise_for_status(self):
+        pass
+    def json(self):
+        return {"choices": [{"message": {"content": self._content}}]}
+
+
+def test_chat_json_null_content_raises_cleanly(monkeypatch):
+    """A 200 response with null message.content must raise a clear error (which
+    the retry loop handles) — not TypeError: object of type 'NoneType' has no len()."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", "x")
+    monkeypatch.setattr(ie.requests, "post", lambda *a, **k: _FakeResp(None))
+    with pytest.raises(RuntimeError):
+        ie._chat_json("sys", "user")
 
 
 def test_extract_schema_tolerates_null_lists(monkeypatch):
