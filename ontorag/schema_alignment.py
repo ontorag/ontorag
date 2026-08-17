@@ -19,6 +19,7 @@ import requests
 
 from ontorag.verbosity import get_logger
 from ontorag import llm_config
+from ontorag.jsonparse import loads_lenient
 
 _log = get_logger("ontorag.schema_alignment")
 
@@ -58,14 +59,8 @@ def _chat_json(system: str, user: str) -> Dict[str, Any]:
         raise RuntimeError("model returned empty/null content")
     _log.debug("API response: %d chars", len(content))
     _log.debug("API raw response:\n%s", content)
-
-    content = content.strip()
-    if content.startswith("```"):
-        content = content.split("```", 2)[1].strip()
-        if content.startswith("json"):
-            content = content[4:].strip()
-
-    return json.loads(content)
+    # tolerant parse: recovers fenced / prose-wrapped / trailing-junk payloads
+    return loads_lenient(content)
 
 
 def _normalize_alignments(raw: Any) -> Dict[str, Any]:

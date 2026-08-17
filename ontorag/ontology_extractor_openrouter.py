@@ -13,6 +13,7 @@ from ontorag.verbosity import get_logger
 from ontorag import llm_config
 from ontorag.card_slim import slim_card
 from ontorag.parallel import map_chunks, get_concurrency
+from ontorag.jsonparse import loads_lenient
 
 _log = get_logger("ontorag.ontology_extractor")
 
@@ -89,15 +90,8 @@ def _chat_json(system: str, user: str) -> Dict[str, Any]:
     if not content:  # some models (e.g. reasoning ones) can return null content
         raise RuntimeError("model returned empty/null content")
     _log.debug("API response: %d chars", len(content))
-
-    # robust JSON parse (strip fences if present)
-    content = content.strip()
-    if content.startswith("```"):
-        content = content.split("```", 2)[1].strip()
-        if content.startswith("json"):
-            content = content[4:].strip()
-
-    return json.loads(content)
+    # tolerant parse: recovers fenced / prose-wrapped / trailing-junk payloads
+    return loads_lenient(content)
 
 def extract_schema_chunk_proposals(
     chunks: List[Dict[str, Any]],
@@ -111,7 +105,7 @@ def extract_schema_chunk_proposals(
 
     _log.info("Schema extraction: %d chunks, model=%s, concurrency=%d", total, llm_config.model(), workers)
 
-    def _work(i: int, ch: Dict[str, Any]) -> Dict[str, Any]:
+    def _work(i: int, ch: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         chunk_id = ch.get("chunk_id", f"#{i}")
         _log.info("  [%d/%d] Processing chunk %s", i + 1, total, chunk_id)
         user = _build_prompt(ch, schema_card)
@@ -127,7 +121,10 @@ def extract_schema_chunk_proposals(
             except Exception as e:
                 _log.info("  Retry %d/3 for chunk %s: %s", attempt + 1, chunk_id, e)
                 if attempt == 2:
-                    raise
+                    # a single unparseable chunk shouldn't abort schema induction —
+                    # the schema is aggregated across all chunks, so drop this one
+                    _log.warning("  Skipping chunk %s after 3 failed attempts: %s", chunk_id, e)
+                    return None
                 time.sleep(1.5 * (attempt + 1))
 
     def _on_done(i: int, data: Dict[str, Any]) -> None:
@@ -136,5 +133,9 @@ def extract_schema_chunk_proposals(
             on_chunk_done(i, total, chunk_id, data)
 
     out = map_chunks(chunks, _work, on_done=_on_done, concurrency=workers)
+    skipped = total - len(out)
+    if skipped:
+        _log.warning("Schema extraction: %d/%d chunk(s) skipped (unparseable after retries)",
+                     skipped, total)
     _log.info("Schema extraction complete: %d proposals from %d chunks", len(out), total)
     return out

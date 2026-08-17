@@ -9,6 +9,7 @@ from ontorag.verbosity import get_logger
 from ontorag import llm_config
 from ontorag.card_slim import slim_card
 from ontorag.parallel import map_chunks, get_concurrency
+from ontorag.jsonparse import loads_lenient
 
 _log = get_logger("ontorag.instance_extractor")
 
@@ -49,8 +50,10 @@ def _chat_json(system: str, user: str) -> Dict[str, Any]:
     if not content:  # some models (e.g. reasoning ones) can return null content
         raise RuntimeError("model returned empty/null content")
     _log.debug("API response: %d chars", len(content))
-    content = _strip_fences(content)
-    return json.loads(content)
+    # tolerant parse: recovers prose-wrapped / trailing-junk / truncated payloads
+    # (a dense chunk can overflow the token limit mid-array — salvage the complete
+    # instances rather than crashing the whole run)
+    return loads_lenient(content, array_key="instances")
 
 def build_instance_prompt(chunk_dto: Dict[str, Any], schema_card: Dict[str, Any]) -> str:
     # Optionally prune the card to chunk-relevant terms (--slim-card); a no-op by default.
@@ -137,7 +140,7 @@ def extract_instance_chunk_proposals(
 
     _log.info("Instance extraction: %d chunks, model=%s, concurrency=%d", total, llm_config.model(), workers)
 
-    def _work(i: int, ch: Dict[str, Any]) -> Dict[str, Any]:
+    def _work(i: int, ch: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         chunk_id = ch.get("chunk_id", f"#{i}")
         _log.info("  [%d/%d] Processing chunk %s", i + 1, total, chunk_id)
         user = build_instance_prompt(ch, schema_card)
@@ -149,9 +152,16 @@ def extract_instance_chunk_proposals(
             except Exception as e:
                 _log.info("  Retry %d/%d for chunk %s: %s", attempt + 1, max_retries, chunk_id, e)
                 if attempt == max_retries - 1:
-                    raise
+                    # one unparseable chunk must not abort a multi-thousand-chunk run
+                    _log.warning("  Skipping chunk %s after %d failed attempts: %s",
+                                 chunk_id, max_retries, e)
+                    return None
                 time.sleep(1.5 * (attempt + 1))
 
     out = map_chunks(chunks, _work, concurrency=workers)
+    skipped = total - len(out)
+    if skipped:
+        _log.warning("Instance extraction: %d/%d chunk(s) skipped (unparseable after retries)",
+                     skipped, total)
     _log.info("Instance extraction complete: %d proposals from %d chunks", len(out), total)
     return out
