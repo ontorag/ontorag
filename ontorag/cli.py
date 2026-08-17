@@ -610,6 +610,57 @@ def cmd_doctor():
     )
 
 
+# -------------------------
+# Hub (publish to GitHub)
+# -------------------------
+
+hub_app = typer.Typer(add_completion=False,
+                      help="Publish a locally-built dataset to GitHub for the OntoRAG Hub.")
+app.add_typer(hub_app, name="hub")
+
+
+@hub_app.command("push")
+def cmd_hub_push(
+    dataset_dir: str = typer.Argument(".", help="Local dataset directory (contains ontology/ and, optionally, content/)."),
+    repo: str = typer.Option(..., "--repo", "-r", help="Target GitHub repo as 'owner/name' (owner defaults to your account if just 'name')."),
+    token: Optional[str] = typer.Option(None, "--token", help="GitHub token with 'repo' scope (else GITHUB_TOKEN / GH_TOKEN)."),
+    include_sources: bool = typer.Option(True, "--include-sources/--no-include-sources",
+                                help="Upload the original corpus under content/sources/. Use --no-include-sources to publish only the derived ontology + graph."),
+    private: bool = typer.Option(True, "--private/--public", help="Visibility when the repo is created (default private)."),
+    name: Optional[str] = typer.Option(None, "--name", help="Dataset title for a generated manifest (default: repo name)."),
+    license: str = typer.Option("", "--license", help="License for a generated manifest (e.g. CC-BY-SA-4.0)."),
+    base_iri: Optional[str] = typer.Option(None, "--base-iri", help="Base IRI for a generated manifest (default: inferred from the graph)."),
+    graph: str = typer.Option("ontology/world.ttl", "--graph", help="Path (relative to the dataset dir) to the world/instance graph."),
+    regenerate_manifest: bool = typer.Option(False, "--regenerate-manifest", help="Rewrite manifest.json even if one already exists."),
+    message: Optional[str] = typer.Option(None, "--message", "-M", help="Commit message."),
+):
+    """
+    Publish a locally-built dataset to GitHub so the Hub can explore or fork it.
+
+    Synthesizes a Hub-compatible manifest.json (ontorag spec + ontology.graph +
+    entity counts, inferred from the graph) when the directory doesn't already
+    have one, then commits the dataset via the GitHub API. Choose whether to
+    upload the raw corpus (--include-sources, default) or only the derived
+    ontology + graph (--no-include-sources).
+    """
+    from ontorag.hub_push import push_dataset
+
+    try:
+        res = push_dataset(dataset_dir, repo, token=token, include_sources=include_sources,
+                           private=private, name=name, license=license, base_iri=base_iri,
+                           graph=graph, message=message, regen_manifest=regenerate_manifest)
+    except RuntimeError as e:
+        typer.secho(f"ERROR hub push: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(1)
+
+    typer.echo(
+        f"OK hub push: {res['url']} "
+        f"({res['files']} files, commit {res['commit'][:7]}, "
+        f"{'created' if res['created'] else 'updated'}, "
+        f"corpus {'included' if res['include_sources'] else 'excluded'})")
+    typer.echo("   It now respects the ontorag structure — explore or fork it from the Hub.")
+
+
 def main():
     app()
 

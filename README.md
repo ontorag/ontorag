@@ -428,6 +428,30 @@ Endpoints:
 
 Supports content negotiation: JSON, CSV, TSV, XML, Turtle, N-Triples, JSON-LD.
 
+### Publish to the Hub
+
+**Push a locally-built dataset to GitHub** so the [OntoRAG Hub](https://github.com/ontorag/hub)
+can explore or fork it. It synthesizes a Hub-compatible `manifest.json` (the
+`ontorag` spec version + an `ontology.graph` pointer + entity counts, inferred
+straight from the graph) when the directory doesn't already have one, then
+commits the dataset in one commit via the GitHub API. Auth is a GitHub token
+with `repo` scope, via `--token` or `GITHUB_TOKEN` / `GH_TOKEN`.
+
+```bash
+# publish the whole dataset (ontology + graph + the original corpus)
+ontorag hub push ./my-dataset --repo myorg/my-dataset
+
+# publish only the derived ontology + graph, not the source documents
+ontorag hub push ./my-dataset --repo myorg/my-dataset --no-include-sources --public
+```
+
+Key options: `--include-sources/--no-include-sources` (upload the raw corpus
+under `content/sources/` or only the derived ontology + graph), `--private/--public`
+(visibility on creation), `--graph` (path to the world/instance TTL, default
+`ontology/world.ttl`), `--base-iri` / `--name` / `--license` (override the
+generated manifest), `--regenerate-manifest` (rewrite an existing manifest).
+Re-running updates the repo; intermediate DTOs and `.env` are never uploaded.
+
 **Start the knowledge MCP server:**
 
 ```bash
@@ -495,6 +519,9 @@ ontorag sparql-server \
 ontorag mcp-server \
   --onto data/schema/staging_schema.ttl \
   --inst data/instances/report.instances.ttl
+
+# 11. (optional) Publish to the Hub — explore/fork it from the web
+ontorag hub push . --repo myorg/report-dataset --no-include-sources
 ```
 
 ---
@@ -574,8 +601,9 @@ Origin is set when an item first enters the schema card and is preserved across 
 ```
 ontorag/
   __init__.py
-  cli.py                            # Typer CLI (14 commands, incl. doctor)
+  cli.py                            # Typer CLI (15 commands, incl. doctor and hub push)
   llm_config.py                     # OpenRouter settings resolver (CLI flag > env > default)
+  hub_push.py                       # publish a dataset to GitHub for the Hub (manifest synth + Git Data API)
   parallel.py                       # bounded-concurrency chunk processing (--concurrency)
   card_slim.py                      # opt-in per-chunk schema-card pruning (--slim-card)
   dto.py                            # DocumentDTO, ChunkDTO, ProvenanceDTO + content hashing

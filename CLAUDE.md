@@ -49,6 +49,7 @@ Verbosity flags go before the subcommand: `uv run ontorag -v <command>` or `-vv`
 | `ontorag ontology-mcp --catalog ...` | Ontology catalog MCP server (port 9020) |
 | `ontorag register-ontology <slug> <ttl>` | Register a baseline OWL/TTL into the catalog |
 | `ontorag init-schema-card --baselines foaf,prov --out ...` | Compose baselines → initial schema card |
+| `ontorag hub push <dir> --repo owner/name [--no-include-sources]` | Publish a built dataset to GitHub for the Hub (synth manifest.json + Git Data API commit) |
 
 ## Architecture
 
@@ -72,7 +73,8 @@ Documents
 
 | File | Role |
 |---|---|
-| `cli.py` | Typer CLI — all 14 commands (incl. `doctor`) |
+| `cli.py` | Typer CLI — all 15 commands (incl. `doctor`, `hub push`) |
+| `hub_push.py` | Publish a dataset to GitHub for the Hub: synth Hub-compatible `manifest.json` (base IRI + counts from the graph) + single-commit via the Git Data API; `--include-sources` toggles the raw corpus |
 | `dto.py` | `DocumentDTO`, `ChunkDTO`, `ProvenanceDTO`; content-hash (`stable_document_id`) |
 | `extractor_ingest.py` | Pluggable ingest engines (`ENGINES` registry): builtin (default), pageindex, llamaindex, docling, unstructured; `engine_status()` powers `doctor` |
 | `storage_jsonl.py` | JSONL persistence for DTOs |

@@ -1,6 +1,6 @@
 [project]
 name = "ontorag"
-version = "0.1.6"
+version = "0.1.7"
 description = "Ontology-first RAG: extract a governed knowledge graph from documents and serve it over SPARQL and MCP."
 readme = "README.md"
 requires-python = ">=3.12"
