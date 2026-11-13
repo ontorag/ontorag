@@ -163,6 +163,9 @@ OntoRAG provides **two MCP servers**:
 - `describe` -- describe a resource by IRI
 - `list_by_class` -- find instances of a class
 - `outgoing` / `incoming` -- graph traversal
+- `mentions` -- the source passages a fact was extracted from
+- on property-graph backends (relate, Neo4j): `cypher_query`, `shortest_path`
+  (how two entities are connected) and `neighbourhood` (what is 1-2 hops away)
 
 **Ontology Catalog MCP** (default port 9020) -- browse and compose baselines:
 - `list_ontologies` -- list registered baselines
@@ -483,6 +486,35 @@ Endpoints:
 
 Supports content negotiation: JSON, CSV, TSV, XML, Turtle, N-Triples, JSON-LD.
 
+### Graph index (embedded, for graph search)
+
+`ontorag index-graph` builds the query form of a dataset's graph: `world.ttl`
+projected into a single [relate](https://relatedb.ai) file — an embedded,
+in-process property-graph engine that speaks Cypher. Like the vector index it is a
+**cache**: written to `.ontorag/graph.rl` (gitignored), stamped, and rebuilt only
+when the TTL changes. `world.ttl` stays the source of truth.
+
+```bash
+pip install 'ontorag[relate]'
+ontorag index-graph /path/to/dataset           # -> .ontorag/graph.rl
+ontorag mcp-server --relate /path/to/dataset   # builds/refreshes, then serves
+```
+
+Measured on a 121k-triple dataset (13k nodes, 21.6k edges):
+
+| | `--onto/--inst` (rdflib) | `--relate` |
+|---|---|---|
+| server startup | 5.9 s (re-parses the TTL) | 0.3–0.8 s (opens the file) |
+| `outgoing` / `incoming` | 2.6 / 2.2 ms | 0.4 / 0.2 ms |
+| 2-hop aggregate | 1,458 ms | 0.3 ms |
+| shortest path | impractical in SPARQL | 1.7 ms |
+
+The store is opened read-only, so `cypher_query` cannot write. Do not commit the
+`.rl`: it is binary (~3× the TTL), and every rebuild would add a full copy to the
+history — it rebuilds in seconds. Vectors stay in the vector index below: relate's
+vector index is exact brute force, which on the same corpus meant a 395 MB file and
+~150 ms per query.
+
 ### Vector index
 
 A dataset's embeddings are committed as per-document JSONL shards
@@ -588,15 +620,20 @@ ontorag mcp-server \
 
 # Neo4j backend (after `load-neo4j`)
 ontorag mcp-server --neo4j --uri bolt://localhost:7687 --user neo4j --password ******
+
+# Embedded relate backend: no server, graph search included (see Graph index)
+ontorag mcp-server --relate /path/to/dataset
 ```
 
 The navigation tools -- `describe`, `list_by_class`, `outgoing`, `incoming`, and
 `mentions` (the citation primitive: which source passages a fact came from) -- are
 identical whichever backend is serving, and all return SPARQL Results JSON. The
 query-language tool follows the store: RDF backends expose `sparql_select` /
-`sparql_construct`, Neo4j exposes `cypher_query` instead, so a client is never
-offered a tool that has to fail. Cypher runs in a read transaction, so the server
-itself rejects writes.
+`sparql_construct`, the property-graph backends (relate, Neo4j) expose
+`cypher_query` instead -- with the projection's shape in its description -- plus
+`shortest_path` and `neighbourhood`, so a client is never offered a tool that has
+to fail. Cypher runs read-only (a read transaction on Neo4j, a read-only open on
+relate), so the store itself rejects writes.
 
 `describe` against Neo4j rebuilds RDF from the projection, and the provenance walk
 survives the round trip -- the mention hangs off `orp:hasMention` and its payload

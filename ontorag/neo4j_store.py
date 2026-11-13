@@ -15,7 +15,9 @@ on `:Resource {uri}`), so the result is pleasant to query in Cypher:
         prov:value "…" ; mcp:chunkId … ] ->  -[:DERIVED_FROM]->(:Mention {quote, chunkId, …})
 
 `graph_to_rows()` is pure and has no driver dependency, so the mapping is testable
-offline; `load_rows()` does the I/O. The `neo4j` driver is imported lazily, so the
+offline; `write_rows()` writes it through any Cypher runner and `load_rows()` does
+the Neo4j I/O. The same projection and queries (`CypherBackend`) also serve the
+embedded relate store (`relate_store.py`). The `neo4j` driver is imported lazily, so the
 package still imports without the `[neo4j]` extra.
 
 Mentions are blank nodes in the source graph (`instances_to_ttl.py`), so they carry
@@ -31,7 +33,8 @@ import os
 import re
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from abc import abstractmethod
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from rdflib import BNode, Graph, Literal, URIRef
 from rdflib.namespace import RDF, RDFS
@@ -273,60 +276,71 @@ def _batches(rows: List[dict], size: int = BATCH):
         yield rows[i:i + size]
 
 
+def write_rows(run: Callable[..., Any], rows: Dict[str, List[dict]], *,
+               batch: int = BATCH) -> Dict[str, int]:
+    """Write mapped rows through any Cypher runner: `run(query, **params)`.
+
+    Store-agnostic, so Neo4j (a driver session) and relate (an embedded
+    connection) load exactly the same projection with exactly the same Cypher.
+    Idempotent: everything MERGEs on a stable key.
+    """
+    counts = {"nodes": 0, "rels": 0, "mentions": 0}
+    run("CREATE CONSTRAINT ontorag_resource_iri IF NOT EXISTS "
+        "FOR (n:Resource) REQUIRE n.iri IS UNIQUE")
+    run("CREATE CONSTRAINT ontorag_mention_key IF NOT EXISTS "
+        "FOR (m:Mention) REQUIRE m.key IS UNIQUE")
+
+    # labels can't be parameterised, so group by label set (one query each)
+    by_labels: Dict[Tuple[str, ...], List[dict]] = defaultdict(list)
+    for n in rows["nodes"]:
+        by_labels[tuple(n["classes"])].append(n)
+    for labels, group in by_labels.items():
+        extra = "".join(f":`{l}`" for l in labels)
+        q = (f"UNWIND $rows AS row "
+             f"MERGE (n:Resource{extra} {{iri: row.iri}}) "
+             f"SET n += row.props, n.label = row.label, "
+             f"n.classIris = row.class_iris, n.propertyIris = row.prop_iris")
+        for chunk in _batches(group, batch):
+            run(q, rows=chunk)
+            counts["nodes"] += len(chunk)
+
+    # same for relationship types
+    by_type: Dict[str, List[dict]] = defaultdict(list)
+    for r in rows["rels"]:
+        by_type[r["type"]].append(r)
+    for rtype, group in by_type.items():
+        q = (f"UNWIND $rows AS row "
+             f"MATCH (a:Resource {{iri: row.from}}) "
+             f"MATCH (b:Resource {{iri: row.to}}) "
+             f"MERGE (a)-[rel:`{rtype}`]->(b) SET rel.iri = row.iri")
+        for chunk in _batches(group, batch):
+            run(q, rows=chunk)
+            counts["rels"] += len(chunk)
+
+    q = ("UNWIND $rows AS row "
+         "MATCH (n:Resource {iri: row.iri}) "
+         "MERGE (m:Mention {key: row.key}) SET m += row.props "
+         "MERGE (n)-[d:DERIVED_FROM]->(m) SET d.iri = row.pred")
+    for chunk in _batches(rows["mentions"], batch):
+        run(q, rows=chunk)
+        counts["mentions"] += len(chunk)
+    return counts
+
+
 def load_rows(rows: Dict[str, List[dict]], *, uri: Optional[str] = None,
               user: Optional[str] = None, password: Optional[str] = None,
               database: Optional[str] = None, wipe: bool = False,
               batch: int = BATCH) -> Dict[str, int]:
     """Write mapped rows into Neo4j. Idempotent: everything MERGEs on a stable key."""
     database = database or os.getenv("NEO4J_DATABASE") or None
-    counts = {"nodes": 0, "rels": 0, "mentions": 0}
 
     with _driver(uri, user, password) as drv:
         with drv.session(database=database) as ses:
-            ses.run("CREATE CONSTRAINT ontorag_resource_iri IF NOT EXISTS "
-                    "FOR (n:Resource) REQUIRE n.iri IS UNIQUE")
-            ses.run("CREATE CONSTRAINT ontorag_mention_key IF NOT EXISTS "
-                    "FOR (m:Mention) REQUIRE m.key IS UNIQUE")
-
             if wipe:
                 _log.warning("neo4j: --wipe — deleting existing :Resource / :Mention nodes")
                 ses.run("MATCH (n) WHERE n:Resource OR n:Mention "
                         "CALL { WITH n DETACH DELETE n } IN TRANSACTIONS OF 10000 ROWS")
-
-            # labels can't be parameterised, so group by label set (one query each)
-            by_labels: Dict[Tuple[str, ...], List[dict]] = defaultdict(list)
-            for n in rows["nodes"]:
-                by_labels[tuple(n["classes"])].append(n)
-            for labels, group in by_labels.items():
-                extra = "".join(f":`{l}`" for l in labels)
-                q = (f"UNWIND $rows AS row "
-                     f"MERGE (n:Resource{extra} {{iri: row.iri}}) "
-                     f"SET n += row.props, n.label = row.label, "
-                     f"n.classIris = row.class_iris, n.propertyIris = row.prop_iris")
-                for chunk in _batches(group, batch):
-                    ses.run(q, rows=chunk)
-                    counts["nodes"] += len(chunk)
-
-            # same for relationship types
-            by_type: Dict[str, List[dict]] = defaultdict(list)
-            for r in rows["rels"]:
-                by_type[r["type"]].append(r)
-            for rtype, group in by_type.items():
-                q = (f"UNWIND $rows AS row "
-                     f"MATCH (a:Resource {{iri: row.from}}) "
-                     f"MATCH (b:Resource {{iri: row.to}}) "
-                     f"MERGE (a)-[rel:`{rtype}`]->(b) SET rel.iri = row.iri")
-                for chunk in _batches(group, batch):
-                    ses.run(q, rows=chunk)
-                    counts["rels"] += len(chunk)
-
-            q = ("UNWIND $rows AS row "
-                 "MATCH (n:Resource {iri: row.iri}) "
-                 "MERGE (m:Mention {key: row.key}) SET m += row.props "
-                 "MERGE (n)-[d:DERIVED_FROM]->(m) SET d.iri = row.pred")
-            for chunk in _batches(rows["mentions"], batch):
-                ses.run(q, rows=chunk)
-                counts["mentions"] += len(chunk)
+            counts = write_rows(lambda q, **p: ses.run(q, **p), rows, batch=batch)
 
     _log.info("neo4j: loaded %(nodes)d nodes, %(rels)d relationships, %(mentions)d mentions",
               counts)
@@ -351,16 +365,32 @@ def neo4j_upload_ttl(ttl_path: str, *, uri: Optional[str] = None,
 _RESERVED = {"iri", "label", "classIris", "propertyIris"}
 
 
-class Neo4jBackend(GraphBackend):
-    """`GraphBackend` over a Neo4j projection, in Cypher.
+MAX_PATH_HOPS = 6
+CYPHER_SCHEMA = (
+    "Graph shape: every instance is (:Resource:<ClassLocalName> {iri, label, "
+    "classIris, propertyIris, <datatype props by local name>}); object properties "
+    "are relationships typed UPPER_SNAKE (memberOf -> MEMBER_OF) carrying the "
+    "predicate IRI in rel.iri; source passages are (:Resource)-[:DERIVED_FROM]->"
+    "(:Mention {quote, chunkId, source, page, section}). Pass values as $params."
+)
 
-    Neo4j does not answer SPARQL, so this deliberately does **not** subclass
+
+class CypherBackend(GraphBackend):
+    """`GraphBackend` over the labelled-property-graph projection, in Cypher.
+
+    The projection (`graph_to_rows` + `write_rows`) is the same whichever store
+    holds it, so the queries are too: a subclass only says how to run a read
+    (`_read`). `Neo4jBackend` does that over Bolt, `relate_store.RelateBackend`
+    in-process.
+
+    An LPG does not answer SPARQL, so this deliberately does **not** subclass
     `SparqlBackend` — the MCP server drops `sparql_select`/`sparql_construct` and
-    offers `cypher_query` instead. The navigation methods still return SPARQL
-    Results JSON, so the rest of the tool contract is unchanged.
+    offers `cypher_query` instead, plus the traversals a property graph is good
+    at (`shortest_path`, `neighbourhood`). Navigation still returns SPARQL Results
+    JSON, so the rest of the tool contract is unchanged.
 
-    Queries run in read transactions (`execute_read`), so the server itself rejects
-    writes — a real guarantee rather than a regex over the query text.
+    Subclasses must make `_read` refuse writes at the store level — a real
+    guarantee rather than a regex over the query text.
 
     One honest divergence from the RDF backends: the projection stores datatype
     properties as node properties keyed by local name, so predicate IRIs are
@@ -368,19 +398,66 @@ class Neo4jBackend(GraphBackend):
     IRI, `outgoing()` reports the bare local name rather than inventing one.
     """
 
-    def __init__(self, uri: Optional[str] = None, user: Optional[str] = None,
-                 password: Optional[str] = None, database: Optional[str] = None) -> None:
-        self._driver = _driver(uri, user, password)
-        self._database = database or os.getenv("NEO4J_DATABASE") or None
-        _log.info("Neo4jBackend: database=%s", self._database or "<default>")
+    @abstractmethod
+    def _read(self, cypher: str, **params) -> List[dict]:
+        """Run a read-only query; rows as plain dicts (nodes as property maps)."""
 
     def close(self) -> None:
-        self._driver.close()
+        pass
 
-    def _read(self, cypher: str, **params) -> List[dict]:
-        with self._driver.session(database=self._database) as ses:
-            return ses.execute_read(
-                lambda tx: [r.data() for r in tx.run(cypher, **params)])
+    # -- traversals: what a property graph adds over the navigation primitives --
+
+    def shortest_path(self, from_iri: str, to_iri: str,
+                      max_hops: int = 4) -> Dict[str, Any]:
+        """The shortest chain of relationships linking two instances, in either
+        direction, one row per hop with the edge in its stored orientation."""
+        hops = max(1, min(int(max_hops), MAX_PATH_HOPS))   # interpolated: keep an int
+        rows = self._read(
+            "MATCH (a:Resource {iri: $a}), (b:Resource {iri: $b}) "
+            f"MATCH p = shortestPath((a)-[*..{hops}]-(b)) "
+            "RETURN [r IN relationships(p) | startNode(r).iri] AS s, "
+            "[r IN relationships(p) | coalesce(r.iri, type(r))] AS p, "
+            "[r IN relationships(p) | endNode(r).iri] AS o",
+            a=from_iri, b=to_iri)
+        out: List[Dict[str, Any]] = []
+        if rows:
+            r = rows[0]
+            for i, (s, p, o) in enumerate(zip(r["s"] or [], r["p"] or [], r["o"] or []), 1):
+                out.append({"step": term(i), "s": term(s, "uri"),
+                            "p": term(p, "uri" if _looks_iri(p) else "literal"),
+                            "o": term(o, "uri")})
+        return results_json(["step", "s", "p", "o"], out)
+
+    def neighbourhood(self, iri: str, depth: int = 1, limit: int = 100,
+                      fan_out: int = 25) -> Dict[str, Any]:
+        """Instances within `depth` (1 or 2) hops, with the edge that reaches them.
+
+        Depth 2 expands only `fan_out` first-hop neighbours: a hub (a setting that
+        every entity is `inWorld`) has thousands of edges, and walking all of them
+        is slow and says nothing.
+        """
+        cols = ("coalesce(b.label, b.prefLabel, b.name) AS label, "
+                "b.classIris AS classes")
+        rows = self._read(
+            "MATCH (a:Resource {iri: $iri})-[r]-(b:Resource) "
+            "RETURN 1 AS hop, null AS via, coalesce(r.iri, type(r)) AS p, "
+            "startNode(r) = a AS out, b.iri AS n, " + cols + " LIMIT $limit",
+            iri=iri, limit=int(limit))
+        if int(depth) >= 2 and len(rows) < int(limit):
+            rows += self._read(
+                "MATCH (a:Resource {iri: $iri})-[]-(m:Resource) "
+                "WITH DISTINCT a, m LIMIT $fan "
+                "MATCH (m)-[r]-(b:Resource) WHERE b <> a "
+                "RETURN 2 AS hop, m.iri AS via, coalesce(r.iri, type(r)) AS p, "
+                "startNode(r) = m AS out, b.iri AS n, " + cols + " LIMIT $limit",
+                iri=iri, fan=int(fan_out), limit=int(limit) - len(rows))
+        return results_json(
+            ["hop", "via", "p", "direction", "n", "label", "class"],
+            [{"hop": term(r["hop"]), "via": term(r["via"], "uri"),
+              "p": term(r["p"], "uri" if _looks_iri(r["p"]) else "literal"),
+              "direction": term("out" if r["out"] else "in"),
+              "n": term(r["n"], "uri"), "label": term(r["label"]),
+              "class": term((r["classes"] or [None])[0], "uri")} for r in rows])
 
     # -- raw escape hatch, exposed as the `cypher_query` MCP tool --
 
@@ -401,8 +478,11 @@ class Neo4jBackend(GraphBackend):
     # -- GraphBackend --
 
     def list_by_class(self, class_iri: str, limit: int = 50) -> Dict[str, Any]:
+        # Narrow by the class's node label first (label lookups are indexed), then
+        # check the full IRI: local names collide across namespaces.
+        label = safe_label(local_name(class_iri))      # sanitised: safe to interpolate
         rows = self._read(
-            "MATCH (n:Resource) WHERE $cls IN n.classIris "
+            f"MATCH (n:Resource:`{label}`) WHERE $cls IN n.classIris "
             "RETURN n.iri AS s, n.label AS label LIMIT $limit",
             cls=class_iri, limit=int(limit))
         return results_json(["s", "label"], [
@@ -450,15 +530,19 @@ class Neo4jBackend(GraphBackend):
 
     def mentions(self, iris, limit: int = 8) -> Dict[str, Any]:
         iris = list(iris)
+        cols = ["s", "quote", "source", "chunkId", "page", "section"]  # = SparqlBackend
         if not iris:
-            return results_json(["s", "quote", "source", "chunkId"], [])
+            return results_json(cols, [])
         rows = self._read(
             "MATCH (n:Resource)-[:DERIVED_FROM]->(m:Mention) WHERE n.iri IN $iris "
             "RETURN n.iri AS s, m.quote AS quote, coalesce(m.source, m.sourcePath) AS source, "
-            "m.chunkId AS chunkId LIMIT $limit", iris=iris, limit=int(limit))
-        return results_json(["s", "quote", "source", "chunkId"], [
+            "m.chunkId AS chunkId, coalesce(m.pageLabel, m.page) AS page, "
+            "m.section AS section LIMIT $limit", iris=iris, limit=int(limit))
+        return results_json(cols, [
             {"s": term(r["s"], "uri"), "quote": term(r["quote"]),
-             "source": term(r["source"]), "chunkId": term(r["chunkId"])} for r in rows])
+             "source": term(r["source"]), "chunkId": term(r["chunkId"]),
+             "page": term(r.get("page")), "section": term(r.get("section"))}
+            for r in rows])
 
     def describe(self, iri: str, accept: str = "text/turtle") -> str:
         """Rebuild the node's neighbourhood as RDF and serialise it, so `describe`
@@ -504,6 +588,28 @@ class Neo4jBackend(GraphBackend):
                         continue
                     g.add((mn, URIRef(mby[k]), Literal(v)))
         return g.serialize(format=_RDF_FORMATS.get(accept, "turtle"))
+
+
+class Neo4jBackend(CypherBackend):
+    """`CypherBackend` over a Neo4j server.
+
+    Queries run in read transactions (`execute_read`), so the server itself
+    rejects writes.
+    """
+
+    def __init__(self, uri: Optional[str] = None, user: Optional[str] = None,
+                 password: Optional[str] = None, database: Optional[str] = None) -> None:
+        self._driver = _driver(uri, user, password)
+        self._database = database or os.getenv("NEO4J_DATABASE") or None
+        _log.info("Neo4jBackend: database=%s", self._database or "<default>")
+
+    def close(self) -> None:
+        self._driver.close()
+
+    def _read(self, cypher: str, **params) -> List[dict]:
+        with self._driver.session(database=self._database) as ses:
+            return ses.execute_read(
+                lambda tx: [r.data() for r in tx.run(cypher, **params)])
 
 
 _RDF_FORMATS = {

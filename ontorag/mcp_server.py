@@ -90,11 +90,34 @@ def create_mcp_app(backend: GraphBackend) -> FastMCP:
             return {"content_type": accept, "data": data}
 
     elif hasattr(backend, "cypher"):
+        from ontorag.neo4j_store import CYPHER_SCHEMA
+
+        def cypher_query(query: str, limit: int = 200,
+                         params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+            _log.debug("tool:cypher_query query=%d chars", len(query))
+            return backend.cypher(query, limit=limit, params=params)
+
+        # the graph shape belongs in the description: a client writing Cypher
+        # cannot guess the projection's labels and property names
+        cypher_query.__doc__ = ("Run a read-only Cypher query; rows are returned as "
+                                "SPARQL Results JSON. " + CYPHER_SCHEMA)
+        app.tool()(cypher_query)
+
+    if hasattr(backend, "shortest_path"):
 
         @app.tool()
-        def cypher_query(query: str, limit: int = 200) -> Dict[str, Any]:
-            """Run a read-only Cypher query; rows are returned as SPARQL Results JSON."""
-            _log.debug("tool:cypher_query query=%d chars", len(query))
-            return backend.cypher(query, limit=limit)
+        def shortest_path(from_iri: str, to_iri: str, max_hops: int = 4) -> Dict[str, Any]:
+            """How two instances are connected: the shortest chain of relationships
+            between them (either direction, at most 6 hops), one row per hop as
+            step/s/p/o. Empty when they are not connected within max_hops."""
+            return backend.shortest_path(_sanitize_iri(from_iri), _sanitize_iri(to_iri),
+                                         max_hops=max_hops)
+
+        @app.tool()
+        def neighbourhood(iri: str, depth: int = 1, limit: int = 100) -> Dict[str, Any]:
+            """Instances within `depth` (1 or 2) hops of an instance, each with the
+            predicate and direction of the edge that reaches it (and, at hop 2, the
+            first-hop node it was reached `via`)."""
+            return backend.neighbourhood(_sanitize_iri(iri), depth=depth, limit=limit)
 
     return app

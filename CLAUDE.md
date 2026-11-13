@@ -18,6 +18,7 @@ uv sync --extra llamaindex   # LlamaIndex fixed-chunk ingest
 uv sync --extra docling      # IBM Docling, layout-aware PDF/DOCX/PPTX
 uv sync --extra unstructured # Unstructured typed elements
 uv sync --extra neo4j        # Neo4j export (official bolt driver)
+uv sync --extra relate       # embedded Cypher graph store (index-graph, mcp-server --relate)
 ```
 
 ## CLI
@@ -47,8 +48,9 @@ Verbosity flags go before the subcommand: `uv run ontorag -v <command>` or `-vv`
 | `ontorag extract-instances --chunks ... --schema-card ... --out-ttl ...` | LLM instance extraction → RDF TTL with PROV provenance |
 | `ontorag load-neo4j --file ontology/world.ttl [--dry-run]` | Project an instances TTL into Neo4j as a native property graph (idempotent; needs `[neo4j]`) |
 | `ontorag index <dir> [--ship] [--quantize turbo4]` | Build the query form of a dataset's vectors: sqlite-vector DB from the JSONL shards. A cache (`.ontorag/vectors.db`, gitignored), or `--ship` for a 9-33 MB publishable index |
+| `ontorag index-graph <dir> [--force]` | Build the query form of a dataset's graph: `world.ttl` -> one embedded relate file (`.ontorag/graph.rl`, gitignored cache, stamped). Never commit it (binary, ~3x the TTL) |
 | `ontorag sparql-server --onto ... --inst ...` | FastAPI in-memory SPARQL endpoint (port 8890) |
-| `ontorag mcp-server --onto ... --inst ...` | Knowledge graph MCP server (port 9010); also `--sparql-endpoint <url>` or `--neo4j` |
+| `ontorag mcp-server --onto ... --inst ...` | Knowledge graph MCP server (port 9010); also `--sparql-endpoint <url>`, `--neo4j`, or `--relate <dataset dir or .rl>` (fastest startup; adds graph search) |
 | `ontorag ontology-mcp --catalog ...` | Ontology catalog MCP server (port 9020) |
 | `ontorag register-ontology <slug> <ttl>` | Register a baseline OWL/TTL into the catalog |
 | `ontorag init-schema-card --baselines foaf,prov --out ...` | Compose baselines → initial schema card |
@@ -77,7 +79,7 @@ Documents
 
 | File | Role |
 |---|---|
-| `cli.py` | Typer CLI — all 15 commands (incl. `doctor`, `hub push`) |
+| `cli.py` | Typer CLI — all 16 commands (incl. `doctor`, `hub push`) |
 | `run_stage.py` | Stage composition (`propose`, `extract`) **and incremental extraction**: `ontology/extraction_state.json` records which documents each LLM step has seen, so adding a file to a large corpus only pays for that file. Schema induction keeps per-chunk proposals (`ontology/proposals.raw.jsonl`) and re-aggregates rather than merging aggregates; instances union into `world.ttl`. A changed schema card forces a full instance pass. Editing a file re-extracts it but does not retract its previous contribution — `--full` after edits. Also: which CLI commands run, in what order, with which manifest-derived LLM flags. Previously copied into every dataset repo as `.hub/run_stage.py`, which drifted and never reached already-provisioned repos. A frozen build re-invokes `sys.executable`, so a packaged app runs stages with no Python installed |
 | `hub_push.py` | Publish a dataset to GitHub for the Hub: synth Hub-compatible `manifest.json` (base IRI + counts from the graph) + single-commit via the Git Data API; `--include-sources` toggles the raw corpus |
 | `dto.py` | `DocumentDTO`, `ChunkDTO`, `ProvenanceDTO`; content-hash (`stable_document_id`) |
@@ -91,11 +93,12 @@ Documents
 | `proposal_to_ttl.py` | Schema proposal/alignment JSON → rdflib `Graph` (OWL/RDFS) |
 | `instances_to_ttl.py` | Instance proposals → rdflib `Graph` with PROV mention nodes |
 | `blazegraph.py` | Blazegraph REST API (upload TTL, SPARQL UPDATE) |
-| `neo4j_store.py` | Neo4j sink: RDF -> labelled property graph. `graph_to_rows()` is a pure, driver-free mapping (offline-testable); `load_rows()` does batched MERGE I/O; `Neo4jBackend` serves the MCP tools in Cypher (read transactions, so writes are refused by the server). Neo4j is a **parallel serving target, not a `SparqlBackend`** — it is an LPG and does not answer SPARQL. The projection stores `propertyIris` on nodes and mentions so predicate IRIs survive the round trip |
+| `neo4j_store.py` | Neo4j sink: RDF -> labelled property graph. `graph_to_rows()` is a pure, driver-free mapping (offline-testable); `write_rows(run, rows)` is the store-agnostic batched MERGE writer (shared with relate), `load_rows()` the Neo4j I/O; `CypherBackend` holds every Cypher query (navigation + `shortest_path`/`neighbourhood` + `cypher`) and subclasses only implement a read-only `_read` — `Neo4jBackend` via read transactions. Neo4j is a **parallel serving target, not a `SparqlBackend`** — it is an LPG and does not answer SPARQL. The projection stores `propertyIris` on nodes and mentions so predicate IRIs survive the round trip |
+| `relate_store.py` | Graph as a query form: instances TTL -> one embedded [relate](https://relatedb.ai) `.rl` file (in-process Cypher), built with the Neo4j projection (`graph_to_rows` + `write_rows`), stamped like `vector_index`, written atomically. **The temp file must end in `.rl`** — relate picks single-file vs directory layout from the suffix. `RelateBackend` opens it `read_only=True` (engine refuses writes) on one dedicated thread, because relate connections are thread-affine and MCP tools run on worker threads. Not used for vectors: its vector index is exact brute force (395 MB / ~150 ms on 18k x 768) |
 | `vector_index.py` | Vectors as a query form: JSONL shards -> one SQLite file searched by [sqlite-vector](https://github.com/sqliteai/sqlite-vector). The shards stay the committed, incremental source; this is derived and disposable, stamped (sha256 of config + shard size/mtime) so an unchanged dataset is not rebuilt. `--ship` drops the full-precision column and keeps the quantised index -- 9 MB against 144 MB of shards, still answering -- for attaching to a release. The extension is a pinned binary, fetched on demand: there is no PyPI package (the `sqlite-vector` name there is an unrelated project) |
 | `sparql_server.py` | FastAPI SPARQL endpoint (SELECT/ASK/CONSTRUCT/DESCRIBE, content negotiation) |
 | `mcp_backend.py` | `GraphBackend` ABC (`describe`/`list_by_class`/`outgoing`/`incoming`/`mentions`) + `SparqlBackend` (adds `select`/`construct`, and implements the four in SPARQL) + `LocalRdfBackend` + `RemoteSparqlBackend`. All navigation returns SPARQL Results JSON, whatever the store |
-| `mcp_server.py` | Knowledge graph MCP tools. Thin: the five navigation tools (incl. `mentions`, the citation primitive) delegate to the backend; query-language tools are registered by capability — `sparql_select`/`sparql_construct` for `SparqlBackend`, `cypher_query` for Neo4j — so a client never sees a tool that must fail |
+| `mcp_server.py` | Knowledge graph MCP tools. Thin: the five navigation tools (incl. `mentions`, the citation primitive) delegate to the backend; query-language tools are registered by capability — `sparql_select`/`sparql_construct` for `SparqlBackend`, `cypher_query` + `shortest_path`/`neighbourhood` for the property-graph backends (relate, Neo4j) — so a client never sees a tool that must fail |
 | `mcp_client.py` | Async SSE client for remote MCP |
 | `ontology_catalog.py` | Local catalog + OWL/TTL → schema card converter; remote baseline fetch |
 | `ontology_mcp.py` | Ontology catalog MCP server |

@@ -672,6 +672,38 @@ def cmd_index(
     )
 
 
+@app.command("index-graph")
+def cmd_index_graph(
+    dataset_dir: str = typer.Argument(".", help="Dataset directory (contains ontology/world.ttl)."),
+    graph: List[str] = typer.Option([], "--graph", help="Instance TTL(s) to project, relative to the dataset dir (repeatable; default: ontology/world.ttl)."),
+    out: Optional[str] = typer.Option(None, "--out", help="Output .rl file (default: <dataset>/.ontorag/graph.rl)."),
+    force: bool = typer.Option(False, "--force", help="Rebuild even if the inputs are unchanged."),
+):
+    """
+    Build the query form of a dataset's graph: an embedded relate store (.rl).
+
+    world.ttl stays the committed source of truth; this is a derived cache (gitignored,
+    stamped, rebuilt only when the TTL changes) that `mcp-server --relate` opens in
+    a fraction of a second, instead of re-parsing the Turtle, and that answers graph
+    search -- shortest paths, neighbourhoods, Cypher. Never commit it. Needs the
+    optional relate extra.
+    """
+    from ontorag import relate_store as rs
+
+    d = Path(dataset_dir)
+    sources = [d / g for g in (graph or [rs.DEFAULT_GRAPH])]
+    try:
+        res = rs.build(sources, out or d / rs.DEFAULT_REL, force=force)
+    except rs.RelateStoreError as e:
+        raise typer.BadParameter(str(e))
+    if res.skipped:
+        typer.echo(f"OK index-graph: unchanged ({res.nodes} nodes, {res.rels} rels) "
+                   f"at {res.path} — use --force to rebuild")
+        return
+    typer.echo(f"OK index-graph: {res.nodes} nodes, {res.rels} rels, {res.mentions} mentions "
+               f"in {res.seconds:.1f}s -> {res.path} ({res.bytes/1e6:.1f} MB)")
+
+
 @app.command("sparql-server")
 def cmd_sparql_server(
     onto: Optional[str] = typer.Option(None, help="Ontology TTL path (default: env ONTOLOGY_TTL)"),
@@ -709,6 +741,7 @@ def cmd_mcp_server(
     inst: Optional[str] = typer.Option(None, help="Instances TTL path (local mode)"),
     sparql_endpoint: Optional[str] = typer.Option(None, help="Remote SPARQL endpoint (Blazegraph/QLever)"),
     neo4j: bool = typer.Option(False, "--neo4j", help="Serve from a Neo4j projection (see load-neo4j)"),
+    relate: Optional[str] = typer.Option(None, "--relate", help="Serve from an embedded relate store: a .rl file, or a dataset dir (its .ontorag/graph.rl is built/refreshed first; see index-graph)"),
     uri: Optional[str] = typer.Option(None, help="Neo4j bolt URI (default: env NEO4J_URI)"),
     user: Optional[str] = typer.Option(None, help="Neo4j username (default: env NEO4J_USER)"),
     password: Optional[str] = typer.Option(None, help="Neo4j password (default: env NEO4J_PASSWORD)"),
@@ -720,17 +753,27 @@ def cmd_mcp_server(
     Start an MCP server backed by either:
       - local TTL (rdflib in-memory),
       - a remote SPARQL endpoint (Blazegraph/QLever), or
-      - a Neo4j projection (--neo4j; needs the optional neo4j extra).
+      - a Neo4j projection (--neo4j; needs the optional neo4j extra), or
+      - an embedded relate store (--relate; needs the optional relate extra).
 
-    The four navigation tools (describe, list_by_class, outgoing, incoming) are the
-    same whichever backend is used. RDF backends additionally expose sparql_select /
-    sparql_construct; Neo4j exposes cypher_query instead, since it is an LPG and does
+    The navigation tools (describe, list_by_class, outgoing, incoming, mentions) are
+    the same whichever backend is used. RDF backends additionally expose
+    sparql_select / sparql_construct; the property-graph backends (Neo4j, relate)
+    expose cypher_query, shortest_path and neighbourhood instead, since an LPG does
     not answer SPARQL.
     """
     from ontorag.mcp_backend import LocalRdfBackend, RemoteSparqlBackend
     from ontorag.mcp_server import create_mcp_app, serve
 
-    if neo4j:
+    if relate:
+        from ontorag import relate_store as rs
+        try:
+            path = rs.resolve(relate)
+            backend = rs.RelateBackend(path)
+        except rs.RelateStoreError as e:
+            raise typer.BadParameter(str(e))
+        _log.info("MCP server: relate backend at %s", path)
+    elif neo4j:
         from ontorag.neo4j_store import Neo4jBackend
         _log.info("MCP server: neo4j backend")
         backend = Neo4jBackend(uri=uri, user=user, password=password, database=database)
@@ -740,7 +783,7 @@ def cmd_mcp_server(
     else:
         if not onto or not inst:
             raise typer.BadParameter(
-                "Provide --neo4j, OR --sparql-endpoint, OR both --onto and --inst")
+                "Provide --relate, OR --neo4j, OR --sparql-endpoint, OR both --onto and --inst")
         _log.info("MCP server: local backend onto=%s inst=%s", onto, inst)
         backend = LocalRdfBackend(onto, inst)
 
@@ -857,6 +900,11 @@ def cmd_doctor():
     except vi.VectorIndexError as e:
         vec_line = f"--  sqlite-vector    → {e}"
     typer.echo(f"\nVector index (`ontorag index`):\n  {vec_line}")
+
+    from ontorag.relate_store import relate_version
+    rv = relate_version()
+    graph_line = (f"OK  relate {rv}" if rv else "--  relate           → pip install 'ontorag[relate]'")
+    typer.echo(f"\nGraph index (`ontorag index-graph`, `mcp-server --relate`):\n  {graph_line}")
 
     key_llm = bool(llm_config.api_key())
     typer.echo("\nLLM (extract-schema / extract-instances / align-schema):")

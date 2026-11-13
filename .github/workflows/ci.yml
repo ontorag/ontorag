@@ -22,7 +22,8 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: python -m pip install --upgrade pip
-      - run: pip install -e ".[dev]"
+      # relate is in-process (no server), so its tests run for real in CI
+      - run: pip install -e ".[dev,relate]"
 
       # Without the extension the vector-index tests skip, which would mean
       # shipping tests that never run. Fetching it is also the only coverage the

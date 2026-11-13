@@ -52,6 +52,9 @@ llamaindex = ["llama-index>=0.10.0,<1"]
 docling = ["docling>=2.0.0,<3"]
 unstructured = ["unstructured>=0.15.0,<1"]
 neo4j = ["neo4j>=5.0,<7"]
+# embedded Cypher graph store for `index-graph` / `mcp-server --relate`; 1.x is what
+# the suite runs against, and a store file is not promised to open across majors
+relate = ["relate-db>=1.0.1,<2"]
 dev = ["pytest>=8.0,<9", "pytest-asyncio>=0.23,<2", "jsonschema>=4.18,<5", "build>=1.2,<2", "twine>=5.1,<7"]
 
 [project.urls]
